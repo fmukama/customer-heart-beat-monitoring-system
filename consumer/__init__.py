@@ -1,0 +1,1 @@
+"""Kafka consumer for the heart-rate monitoring pipeline."""
