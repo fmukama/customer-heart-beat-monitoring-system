@@ -1,0 +1,1 @@
+"""Kafka producer for the heart-rate monitoring pipeline."""
