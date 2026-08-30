@@ -49,3 +49,46 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.8",
 ]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "real-time-heartbeat-monitoring"
+version = "0.1.0"
+description = "Production-oriented real-time customer heart-rate monitoring pipeline"
+requires-python = ">=3.11"
+
+dependencies = [
+    "kafka-python>=2.2.0",
+    "psycopg[binary]>=3.2.0",
+    "jsonschema>=4.23.0",
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+
+
+[tool.setuptools.packages.find]
+include = [
+    "simulator*",
+    "producer*",
+    "consumer*",
+]
+
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests"
+]
+
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
