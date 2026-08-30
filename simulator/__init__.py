@@ -1,0 +1,1 @@
+"""Synthetic heart-rate event simulator."""
