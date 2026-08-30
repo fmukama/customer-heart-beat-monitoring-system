@@ -12,7 +12,8 @@ env/
 build/
 dist/
 *.egg-info/
-
+#
+draft.txt
 # Testing
 .pytest_cache/
 .coverage

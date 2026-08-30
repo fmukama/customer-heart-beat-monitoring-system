@@ -1,8 +1,10 @@
 from datetime import datetime
 from uuid import UUID
 
+from .errors import PermanentEventError
 
-class InvalidEventError(ValueError):
+
+class InvalidEventError(PermanentEventError):
     """Raised when a heart-rate event is invalid."""
 
 
@@ -28,13 +30,19 @@ def validate_event(event: dict) -> None:
     try:
         UUID(event["event_id"])
     except (ValueError, AttributeError, TypeError) as exc:
-        raise InvalidEventError("Invalid event_id") from exc
+        raise InvalidEventError(
+            "Invalid event_id"
+        ) from exc
 
     if not isinstance(event["customer_id"], str):
-        raise InvalidEventError("customer_id must be a string")
+        raise InvalidEventError(
+            "customer_id must be a string"
+        )
 
     if not isinstance(event["heart_rate"], int):
-        raise InvalidEventError("heart_rate must be an integer")
+        raise InvalidEventError(
+            "heart_rate must be an integer"
+        )
 
     if event["heart_rate"] <= 0:
         raise InvalidEventError(
