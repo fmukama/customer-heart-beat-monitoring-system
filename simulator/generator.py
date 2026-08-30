@@ -1,5 +1,6 @@
 import json
 import random
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -83,13 +84,17 @@ def generate_events(
 def main() -> None:
     """
     Run the simulator and print events as JSON.
+
+    stdout carries only JSON events so it can be piped into the producer.
+    Diagnostics go to stderr.
     """
 
     config = SimulatorConfig()
 
     print(
         f"Starting simulator with "
-        f"{config.customer_count} customers..."
+        f"{config.customer_count} customers...",
+        file=sys.stderr,
     )
 
     for event in generate_events(config):
@@ -104,7 +109,8 @@ def main() -> None:
             print(
                 f"[SIMULATING LATE EVENT] "
                 f"delay={delay:.2f}s "
-                f"event_id={event['event_id']}"
+                f"event_id={event['event_id']}",
+                file=sys.stderr,
             )
 
             time.sleep(delay)
