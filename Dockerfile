@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -9,6 +9,19 @@ COPY pyproject.toml ./
 COPY simulator/ ./simulator/
 COPY producer/ ./producer/
 COPY consumer/ ./consumer/
+
+
+# Dev tooling: ruff and pytest. Source is bind-mounted at run time.
+FROM base AS dev
+
+RUN pip install --no-cache-dir -e ".[dev]"
+
+COPY tests/ ./tests/
+
+CMD ["pytest"]
+
+
+FROM base AS runtime
 
 RUN pip install --no-cache-dir .
 

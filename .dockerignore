@@ -9,7 +9,6 @@ venv/
 *.egg-info/
 build/
 dist/
-tests/
 database/
 config/
 scripts/

@@ -1,55 +1,98 @@
-.PHONY: help install lint test simulator up down logs clean
+.PHONY: help build lint lint-fix test up down restart logs ps topics simulator producer consumer psql shell clean
+
+COMPOSE := docker compose
+DEV     := $(COMPOSE) run --rm dev
+
+POSTGRES_USER ?= heartbeat_user
+POSTGRES_DB   ?= heartbeat
 
 help:
-	@echo "Available commands:"
-	@echo "  make install     Install Python dependencies"
-	@echo "  make lint        Run Ruff"
-	@echo "  make test        Run tests"
-	@echo "  make simulator   Run the simulator"
-	@echo "  make up          Start Docker services"
-	@echo "  make down        Stop Docker services"
-	@echo "  make logs        Show Docker logs"
-	@echo "  make clean       Remove containers and volumes"
+	@echo Everything runs in Docker. No host Python required.
+	@echo   ---- build ----
+	@echo   make build       Build the application images
+	@echo   make lint        Run Ruff
+	@echo   make lint-fix    Run Ruff with --fix
+	@echo   make test        Run pytest
+	@echo   ---- stack ----
+	@echo   make up          Start the full stack
+	@echo   make down        Stop the stack
+	@echo   make restart     Rebuild and restart producer and consumer
+	@echo   make logs        Follow all logs
+	@echo   make ps          Show service status
+	@echo   ---- inspect ----
+	@echo   make topics      List Kafka topics
+	@echo   make simulator   Print raw events, no Kafka
+	@echo   make producer    Follow producer logs
+	@echo   make consumer    Follow consumer logs
+	@echo   make psql        Open a psql shell
+	@echo   make shell       Open a shell in the dev image
+	@echo   ---- reset ----
+	@echo   make clean       Stop the stack and delete all volumes
 
 
-install:
-	python -m pip install --upgrade pip
-	pip install -e ".[dev]"
+build:
+	$(COMPOSE) build
 
 
 lint:
-	ruff check .
+	$(DEV) ruff check .
+
+
+lint-fix:
+	$(DEV) ruff check --fix .
 
 
 test:
-	pytest
-
-
-simulator:
-	python -m simulator
+	$(DEV) pytest
 
 
 up:
-	docker compose up -d
+	$(COMPOSE) up -d --build
 
 
 down:
-	docker compose down
+	$(COMPOSE) down
+
+
+restart:
+	$(COMPOSE) up -d --build producer consumer
 
 
 logs:
-	docker compose logs -f
+	$(COMPOSE) logs -f
+
+
+ps:
+	$(COMPOSE) ps
+
+
+topics:
+	$(COMPOSE) exec kafka \
+		/opt/kafka/bin/kafka-topics.sh \
+		--bootstrap-server kafka:29092 \
+		--list
+
+
+simulator:
+	$(COMPOSE) run --rm simulator
+
+
+producer:
+	$(COMPOSE) logs -f producer
+
+
+consumer:
+	$(COMPOSE) logs -f consumer
+
+
+psql:
+	$(COMPOSE) exec postgres \
+		psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
+
+
+shell:
+	$(DEV) bash
 
 
 clean:
-	docker compose down -v
-
-consumer:
-	python -m consumer.consumer
-
-
-postgres-shell:
-	docker exec -it heartbeat-postgres \
-		psql \
-		-U heartbeat_user \
-		-d heartbeat
+	$(COMPOSE) down -v

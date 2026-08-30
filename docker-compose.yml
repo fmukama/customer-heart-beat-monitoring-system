@@ -135,11 +135,33 @@ services:
 
 
   # ============================================================
+  # Dev tooling - lint and tests
+  # ============================================================
+
+  dev:
+    build:
+      context: .
+      target: dev
+    image: heartbeat-dev:latest
+
+    profiles: ["tools"]
+
+    # Bind-mounted so edits apply without a rebuild.
+    volumes:
+      - .:/app
+
+    networks:
+      - heartbeat_network
+
+
+  # ============================================================
   # Simulator - prints raw events, no Kafka
   # ============================================================
 
   simulator:
-    build: .
+    build:
+      context: .
+      target: runtime
     image: heartbeat-app:latest
     container_name: heartbeat-simulator
 
@@ -156,7 +178,9 @@ services:
   # ============================================================
 
   producer:
-    build: .
+    build:
+      context: .
+      target: runtime
     image: heartbeat-app:latest
     container_name: heartbeat-producer
 
@@ -193,7 +217,9 @@ services:
   # ============================================================
 
   consumer:
-    build: .
+    build:
+      context: .
+      target: runtime
     image: heartbeat-app:latest
     container_name: heartbeat-consumer
 
