@@ -6,20 +6,26 @@ from kafka import KafkaConsumer
 from .anomaly import classify_heart_rate
 from .config import ConsumerConfig
 from .database import create_connection
+from .dlq import DeadLetterProducer
+from .errors import (
+    DLQPublishError,
+    PermanentEventError,
+)
 from .repository import insert_event
-from .validation import InvalidEventError, validate_event
+from .retry import retry_with_backoff
+from .validation import validate_event
 
 
 logger = logging.getLogger(__name__)
 
 
 class HeartRateConsumer:
-    """
-    Consume heart-rate events from Kafka
-    and persist them into PostgreSQL.
-    """
 
-    def __init__(self, config: ConsumerConfig) -> None:
+    def __init__(
+        self,
+        config: ConsumerConfig,
+    ) -> None:
+
         self.config = config
 
         self.consumer = KafkaConsumer(
@@ -31,102 +37,137 @@ class HeartRateConsumer:
 
             auto_offset_reset=config.auto_offset_reset,
 
-            enable_auto_commit=config.enable_auto_commit,
+            enable_auto_commit=False,
 
             value_deserializer=lambda value: json.loads(
                 value.decode("utf-8")
             ),
         )
 
-        self.connection = create_connection(config)
+        self.connection = create_connection(
+            config
+        )
+
+        self.dlq_producer = DeadLetterProducer(
+            bootstrap_servers=config.bootstrap_servers,
+            topic=config.dlq_topic,
+        )
 
     def process_message(self, message) -> None:
-        """
-        Process a single Kafka message.
-        """
 
         event = message.value
 
         try:
+
+            # --------------------------------
+            # 1. Validate
+            # --------------------------------
+
             validate_event(event)
+
+            # --------------------------------
+            # 2. Classify
+            # --------------------------------
 
             event["status"] = classify_heart_rate(
                 event["heart_rate"]
             )
 
-            inserted = insert_event(
-                self.connection,
-                event,
+            # --------------------------------
+            # 3. Write to PostgreSQL
+            # --------------------------------
+
+            retry_with_backoff(
+                lambda: insert_event(
+                    self.connection,
+                    event,
+                ),
+                max_attempts=self.config.max_retry_attempts,
             )
 
-            if inserted:
-                logger.info(
-                    "Stored event_id=%s customer=%s "
-                    "heart_rate=%s status=%s",
-                    event["event_id"],
-                    event["customer_id"],
-                    event["heart_rate"],
-                    event["status"],
-                )
-            else:
-                logger.warning(
-                    "Duplicate event ignored: event_id=%s",
-                    event["event_id"],
-                )
+            # --------------------------------
+            # 4. Commit Kafka offset
+            # --------------------------------
 
-            # Commit only after PostgreSQL processing succeeds.
             self.consumer.commit()
 
-        except InvalidEventError as exc:
-            logger.error(
-                "Invalid event: %s",
+            logger.info(
+                "Processed event=%s",
+                event["event_id"],
+            )
+
+        except PermanentEventError as exc:
+
+            logger.warning(
+                "Permanent event error: event=%s error=%s",
+                event.get("event_id"),
                 exc,
             )
 
-            # For now, we commit invalid messages so that
-            # one bad event does not block the partition forever.
+            # Send to DLQ.
             #
-            # Later we will introduce a Dead Letter Topic.
-            self.consumer.commit()
-
-        except Exception:
-            logger.exception(
-                "Failed to process Kafka message."
+            # If DLQ publication fails,
+            # the offset is NOT committed.
+            self.dlq_producer.send(
+                event=event,
+                error_type="VALIDATION_ERROR",
+                error_message=str(exc),
+                source_topic=message.topic,
+                source_partition=message.partition,
+                source_offset=message.offset,
             )
 
-            # Do NOT commit the offset.
-            #
-            # Kafka can redeliver the event after restart.
+            # Only acknowledge Kafka after
+            # the DLQ successfully receives it.
+            self.consumer.commit()
+
+        except DLQPublishError:
+
+            logger.exception(
+                "DLQ publication failed. "
+                "Offset will not be committed."
+            )
+
+            raise
+
+        except Exception:
+
+            logger.exception(
+                "Temporary processing failure. "
+                "Offset will not be committed."
+            )
+
             raise
 
     def run(self) -> None:
-        """
-        Continuously consume Kafka messages.
-        """
 
         logger.info(
-            "Starting consumer. topic=%s group=%s",
+            "Starting consumer: topic=%s group=%s",
             self.config.topic,
             self.config.group_id,
         )
 
         try:
+
             for message in self.consumer:
+
                 self.process_message(message)
 
         finally:
+
             self.close()
 
     def close(self) -> None:
-        """
-        Cleanly close Kafka and PostgreSQL connections.
-        """
 
         self.consumer.close()
+
+        self.dlq_producer.close()
+
         self.connection.close()
 
 
 def main() -> None:
+
     logging.basicConfig(
         level=logging.INFO,
         format=(
@@ -142,10 +183,14 @@ def main() -> None:
     consumer = HeartRateConsumer(config)
 
     try:
+
         consumer.run()
 
     except KeyboardInterrupt:
-        logger.info("Consumer interrupted.")
+
+        logger.info(
+            "Consumer interrupted."
+        )
 
 
 if __name__ == "__main__":
