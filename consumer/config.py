@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ConsumerConfig:
-    """Configuration for the Kafka consumer."""
 
     bootstrap_servers: str = os.getenv(
         "KAFKA_BOOTSTRAP_SERVERS",
@@ -14,6 +13,11 @@ class ConsumerConfig:
     topic: str = os.getenv(
         "KAFKA_HEART_RATE_TOPIC",
         "heart-rate-events",
+    )
+
+    dlq_topic: str = os.getenv(
+        "KAFKA_HEART_RATE_DLQ_TOPIC",
+        "heart-rate-events-dlq",
     )
 
     group_id: str = os.getenv(
@@ -56,4 +60,11 @@ class ConsumerConfig:
     postgres_password: str = os.getenv(
         "POSTGRES_PASSWORD",
         "heartbeat_password",
+    )
+
+    max_retry_attempts: int = int(
+        os.getenv(
+            "MAX_RETRY_ATTEMPTS",
+            "4",
+        )
     )
