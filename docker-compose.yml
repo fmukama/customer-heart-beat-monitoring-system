@@ -1,0 +1,163 @@
+services:
+
+  # ============================================================
+  # Kafka - KRaft mode
+  # ============================================================
+
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: heartbeat-kafka
+
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+
+    environment:
+      # -------------------------
+      # KRaft
+      # -------------------------
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      # -------------------------
+      # Listeners
+      # -------------------------
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${KAFKA_PORT:-9092}
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >
+        CONTROLLER:PLAINTEXT,
+        PLAINTEXT:PLAINTEXT
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # -------------------------
+      # Single-node development
+      # -------------------------
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+
+      # -------------------------
+      # General
+      # -------------------------
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+      KAFKA_NUM_PARTITIONS: 3
+
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+    networks:
+      - heartbeat_network
+
+
+  # ============================================================
+  # PostgreSQL
+  # ============================================================
+
+  postgres:
+    image: postgres:17
+    container_name: heartbeat-postgres
+
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-heartbeat}
+      POSTGRES_USER: ${POSTGRES_USER:-heartbeat_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-heartbeat_password}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-heartbeat_user} -d ${POSTGRES_DB:-heartbeat}"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - heartbeat_network
+
+
+  # ============================================================
+  # Prometheus
+  # ============================================================
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: heartbeat-prometheus
+
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+    depends_on:
+      - kafka
+
+    networks:
+      - heartbeat_network
+
+
+  # ============================================================
+  # Grafana
+  # ============================================================
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    container_name: heartbeat-grafana
+
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin_password}
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+    depends_on:
+      - prometheus
+
+    networks:
+      - heartbeat_network
+
+
+# ==============================================================
+# Persistent volumes
+# ==============================================================
+
+volumes:
+  kafka_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+
+
+# ==============================================================
+# Network
+# ==============================================================
+
+networks:
+  heartbeat_network:
+    driver: bridge
