@@ -43,3 +43,13 @@ logs:
 
 clean:
 	docker compose down -v
+
+consumer:
+	python -m consumer.consumer
+
+
+postgres-shell:
+	docker exec -it heartbeat-postgres \
+		psql \
+		-U heartbeat_user \
+		-d heartbeat
