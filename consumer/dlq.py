@@ -3,16 +3,25 @@ from datetime import datetime, timezone
 
 from kafka import KafkaProducer
 
-
-DLQ_TOPIC = "heart-rate-events-dlq"
+from .errors import DLQPublishError
 
 
 class DeadLetterProducer:
 
-    def __init__(self, bootstrap_servers: str) -> None:
+    def __init__(
+        self,
+        bootstrap_servers: str,
+        topic: str,
+    ) -> None:
+
+        self.topic = topic
 
         self.producer = KafkaProducer(
             bootstrap_servers=bootstrap_servers,
+
+            acks="all",
+
+            retries=5,
 
             value_serializer=lambda value: json.dumps(
                 value
@@ -54,13 +63,22 @@ class DeadLetterProducer:
             "unknown",
         )
 
-        self.producer.send(
-            DLQ_TOPIC,
-            key=customer_id,
-            value=dlq_event,
-        )
+        try:
 
-        self.producer.flush()
+            future = self.producer.send(
+                self.topic,
+                key=customer_id,
+                value=dlq_event,
+            )
+
+            # Wait for Kafka acknowledgement.
+            future.get(timeout=10)
+
+        except Exception as exc:
+
+            raise DLQPublishError(
+                "Failed to publish event to DLQ"
+            ) from exc
 
     def close(self) -> None:
         self.producer.close()
