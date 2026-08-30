@@ -33,3 +33,19 @@ testpaths = [
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+
+[project]
+name = "real-time-heartbeat-monitoring"
+version = "0.1.0"
+description = "Production-oriented real-time customer heart-rate monitoring pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "kafka-python>=2.2.0",
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
