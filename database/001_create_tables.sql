@@ -21,6 +21,14 @@ CREATE TABLE IF NOT EXISTS heart_rate_events (
 );
 
 
+ALTER TABLE heart_rate_events
+ADD COLUMN IF NOT EXISTS
+    is_late BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE heart_rate_events
+ADD COLUMN IF NOT EXISTS
+    lateness_seconds DOUBLE PRECISION;
+
 -- Queries will frequently filter by customer and time.
 CREATE INDEX IF NOT EXISTS idx_heart_rate_customer_time
     ON heart_rate_events (customer_id, event_time);
