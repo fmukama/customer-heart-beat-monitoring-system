@@ -1,10 +1,11 @@
 import json
 import logging
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from kafka import KafkaConsumer
 
+from . import metrics
 from .aggregator import DailyAggregator
 from .anomaly import classify_heart_rate
 from .config import ConsumerConfig
@@ -84,6 +85,8 @@ class HeartRateConsumer:
 
         event = message.value
 
+        started = time.perf_counter()
+
         try:
             validate_event(event)
 
@@ -122,13 +125,24 @@ class HeartRateConsumer:
 
             self.consumer.commit()
 
+            metrics.messages_processed.inc()
+
+            if status == "ABNORMAL":
+                metrics.abnormal_events.inc()
+
             if outcome.is_late:
+                metrics.late_events.labels(
+                    aggregated=str(outcome.aggregated).lower(),
+                ).inc()
+
                 logger.info(
                     "Late event: event=%s lateness=%.1fs aggregated=%s",
                     event["event_id"],
                     outcome.lateness_seconds,
                     outcome.aggregated,
                 )
+
+            self.observe_watermark()
 
         except PermanentEventError as exc:
 
@@ -155,12 +169,22 @@ class HeartRateConsumer:
             # the DLQ successfully receives it.
             self.consumer.commit()
 
+            metrics.dlq_messages.inc()
+
+            metrics.messages_failed.labels(
+                reason="validation",
+            ).inc()
+
         except DLQPublishError:
 
             logger.exception(
                 "DLQ publication failed. "
                 "Offset will not be committed."
             )
+
+            metrics.messages_failed.labels(
+                reason="dlq_publish",
+            ).inc()
 
             raise
 
@@ -171,7 +195,29 @@ class HeartRateConsumer:
                 "Offset will not be committed."
             )
 
+            metrics.messages_failed.labels(
+                reason="temporary",
+            ).inc()
+
             raise
+
+        finally:
+
+            metrics.processing_seconds.observe(
+                time.perf_counter() - started
+            )
+
+    def observe_watermark(self) -> None:
+        watermark = self.aggregator.watermark
+
+        if watermark is not None:
+            metrics.watermark_lag_seconds.set(
+                (datetime.now(UTC) - watermark).total_seconds()
+            )
+
+        metrics.windows_open.set(
+            len(self.aggregator.windows)
+        )
 
     def flush_windows(self, force: bool = False) -> None:
         """
@@ -208,6 +254,8 @@ class HeartRateConsumer:
                 aggregate.event_count,
             )
 
+            metrics.windows_finalized.inc()
+
         for aggregate in self.aggregator.snapshot_open_windows():
             retry_with_backoff(
                 lambda aggregate=aggregate: upsert_daily_aggregate(
@@ -219,6 +267,8 @@ class HeartRateConsumer:
             )
 
     def run(self) -> None:
+
+        metrics.serve(self.config.metrics_port)
 
         logger.info(
             "Starting consumer: topic=%s group=%s "
@@ -245,6 +295,8 @@ class HeartRateConsumer:
                         self.process_message(message)
 
                 self.flush_windows()
+
+                self.observe_watermark()
 
         finally:
 

@@ -205,6 +205,11 @@ services:
       KAFKA_LINGER_MS: ${KAFKA_LINGER_MS:-5}
       KAFKA_BATCH_SIZE: ${KAFKA_BATCH_SIZE:-16384}
       KAFKA_COMPRESSION_TYPE: ${KAFKA_COMPRESSION_TYPE:-gzip}
+      SIMULATOR_CUSTOMER_COUNT: ${SIMULATOR_CUSTOMER_COUNT:-10}
+      SIMULATOR_EVENTS_PER_SECOND: ${SIMULATOR_EVENTS_PER_SECOND:-1}
+      SIMULATOR_ABNORMAL_PROBABILITY: ${SIMULATOR_ABNORMAL_PROBABILITY:-0.05}
+      SIMULATOR_OUT_OF_ORDER_PROBABILITY: ${SIMULATOR_OUT_OF_ORDER_PROBABILITY:-0.05}
+      SIMULATOR_MAX_BACKDATE_SECONDS: ${SIMULATOR_MAX_BACKDATE_SECONDS:-600}
 
     restart: on-failure
 
@@ -233,19 +238,26 @@ services:
 
     command: ["python", "-m", "consumer.consumer"]
 
+    ports:
+      - "${METRICS_PORT:-8000}:8000"
+
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_HEART_RATE_TOPIC: ${KAFKA_HEART_RATE_TOPIC:-heart-rate-events}
       KAFKA_HEART_RATE_DLQ_TOPIC: ${KAFKA_HEART_RATE_DLQ_TOPIC:-heart-rate-events-dlq}
       KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-heartbeat-consumer-group}
       KAFKA_AUTO_OFFSET_RESET: ${KAFKA_AUTO_OFFSET_RESET:-earliest}
-      KAFKA_ENABLE_AUTO_COMMIT: ${KAFKA_ENABLE_AUTO_COMMIT:-false}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-heartbeat}
       POSTGRES_USER: ${POSTGRES_USER:-heartbeat_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-heartbeat_password}
       MAX_RETRY_ATTEMPTS: ${MAX_RETRY_ATTEMPTS:-4}
+      ALLOWED_OUT_OF_ORDERNESS_SECONDS: ${ALLOWED_OUT_OF_ORDERNESS_SECONDS:-300}
+      ALLOWED_LATENESS_SECONDS: ${ALLOWED_LATENESS_SECONDS:-3600}
+      WINDOW_FLUSH_INTERVAL_SECONDS: ${WINDOW_FLUSH_INTERVAL_SECONDS:-30}
+      KAFKA_POLL_TIMEOUT_MS: ${KAFKA_POLL_TIMEOUT_MS:-1000}
+      METRICS_PORT: 8000
 
     restart: on-failure
 
@@ -296,6 +308,8 @@ services:
 
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
     depends_on:
       - prometheus
