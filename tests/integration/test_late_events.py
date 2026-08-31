@@ -1,9 +1,10 @@
 """
-Scenarios E-G from draft.txt section 26.
+Event time, watermarks, windowing and the late-event policy.
 
-Event time, watermarks, windowing and the late-event policy:
-an event past the allowed lateness is retained raw but must not
-change an already-finalized window.
+Covers out-of-order detection, window assignment by event time rather
+than arrival order, window boundaries, and the policy decision that an
+event arriving past the allowed lateness is retained as raw data but
+must not change an already-finalized window.
 """
 
 import uuid
@@ -37,7 +38,7 @@ def midday(offset_days: int = 0) -> datetime:
     return base + timedelta(days=offset_days)
 
 
-def test_scenario_e_out_of_order_event_is_detected(
+def test_out_of_order_event_is_flagged_with_measured_lateness(
     publish, build_consumer, db, customer
 ):
     publish(make_event(customer, event_time=midday()))
@@ -88,7 +89,7 @@ def test_moderately_out_of_order_event_is_not_late(
     assert all(not row["is_late"] for row in rows(db, customer))
 
 
-def test_scenario_f_late_event_updates_the_correct_window(
+def test_late_event_updates_the_window_its_event_time_belongs_to(
     publish, build_consumer, db, customer
 ):
     # Today, then yesterday. The late event belongs to yesterday's
@@ -144,12 +145,12 @@ def test_window_boundaries_are_one_day_and_do_not_overlap(
     assert windows[0]["window_end"] == windows[1]["window_start"]
 
 
-def test_scenario_g_too_late_event_retained_but_window_unchanged(
+def test_event_past_allowed_lateness_leaves_finalized_window_unchanged(
     publish, build_consumer, db, customer
 ):
     """
     The policy decision: raw data is always kept, but a finalized
-    window is immutable.
+    window is immutable, so historical aggregates stay stable.
     """
 
     publish(make_event(customer, heart_rate=70, event_time=midday(-2)))

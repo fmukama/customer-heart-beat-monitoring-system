@@ -1,6 +1,6 @@
 # Performance and Scaling
 
-Deliverables 16 and 17 from `draft.txt`.
+Load testing and consumer-group scaling.
 
 ## How to reproduce
 
@@ -61,7 +61,7 @@ waited for each message's acknowledgement with `future.get()`, capping
 input at roughly `1 / linger_ms` ≈ 20/s. `KAFKA_SYNC_SEND=false` (set by
 the load overlay) removes it.
 
-## Answers to draft section 19
+## Answers to the load-testing questions
 
 **Where does the bottleneck appear?** The consumer's per-event commits,
 at ~57/s per instance. Not Kafka, not PostgreSQL capacity.
@@ -124,7 +124,7 @@ kafka-python-3.0.11-7fe1cbc7-...              0
 
 It joins the group, is assigned zero partitions, and idles. Throughput
 rose only from 195/s to 206/s — within measurement noise. This is the
-learning objective from draft section 20 demonstrated directly:
+learning objective demonstrated directly:
 
 > Kafka partitions provide the parallelism available to a consumer group.
 

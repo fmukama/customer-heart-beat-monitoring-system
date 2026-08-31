@@ -1,4 +1,19 @@
+"""
+Fault injection primitives for the simulator.
+
+Pure functions, so each is trivially unit-testable and the generator
+stays a thin orchestrator over them.
+"""
+
 import random
+
+
+def should_happen(probability: float) -> bool:
+    """
+    Coin flip for whether a fault fires on this event.
+    """
+
+    return random.random() < probability
 
 
 def generate_normal_heart_rate(
@@ -6,7 +21,7 @@ def generate_normal_heart_rate(
     maximum: int = 100,
 ) -> int:
     """
-    Generate a normal simulated heart-rate value.
+    A resting heart rate inside the healthy band.
     """
 
     return random.randint(minimum, maximum)
@@ -17,37 +32,35 @@ def generate_abnormal_heart_rate(
     maximum: int = 180,
 ) -> int:
     """
-    Generate an intentionally abnormal simulated heart-rate value.
+    A reading outside the healthy band but still physiologically
+    plausible, so it is stored and tagged rather than rejected.
     """
 
-    # Generate either a low or high abnormal value.
     if random.choice([True, False]):
         return random.randint(minimum, 59)
 
     return random.randint(101, maximum)
 
 
-def should_be_abnormal(probability: float) -> bool:
+def generate_out_of_range_heart_rate() -> int:
     """
-    Decide whether the next event should be abnormal.
-    """
+    A value outside the schema's 20-250 range.
 
-    return random.random() < probability
-
-
-def should_be_out_of_order(probability: float) -> bool:
-    """
-    Decide whether the next event should carry a backdated event_time.
+    Models a malfunctioning sensor: rejected as invalid rather than
+    merely classified abnormal.
     """
 
-    return random.random() < probability
+    if random.choice([True, False]):
+        return random.randint(1, 19)
+
+    return random.randint(251, 600)
 
 
 def generate_backdate_seconds(
     maximum_seconds: float,
 ) -> float:
     """
-    Generate how far back an out-of-order event_time is shifted.
+    How far back an out-of-order event_time is shifted.
 
     Backdating event_time is what makes the event arrive out of order.
     Delaying delivery alone would not: event_time would still increase
@@ -55,26 +68,6 @@ def generate_backdate_seconds(
     """
 
     return random.uniform(1.0, maximum_seconds)
-
-
-def should_happen(probability: float) -> bool:
-    """
-    Generic fault-injection coin flip.
-    """
-
-    return random.random() < probability
-
-
-def generate_out_of_range_heart_rate() -> int:
-    """
-    A value outside the schema's 20-250 range, so it is rejected as
-    invalid rather than merely classified abnormal.
-    """
-
-    if random.choice([True, False]):
-        return random.randint(1, 19)
-
-    return random.randint(251, 600)
 
 
 # customer_id is deliberately never corrupted: the producer uses it as
@@ -93,8 +86,8 @@ def corrupt_event(event: dict) -> dict:
     """
     Return a structurally invalid copy of an event.
 
-    Varies the corruption so the DLQ sees a realistic spread of failure
-    modes rather than one repeated shape.
+    Varies the corruption so the dead letter topic sees a realistic
+    spread of failure modes rather than one repeated shape.
     """
 
     broken = dict(event)

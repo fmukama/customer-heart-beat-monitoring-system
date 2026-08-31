@@ -7,14 +7,12 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 from .config import SimulatorConfig
-from .scenarios import (
+from .faults import (
     corrupt_event,
     generate_abnormal_heart_rate,
     generate_backdate_seconds,
     generate_normal_heart_rate,
     generate_out_of_range_heart_rate,
-    should_be_abnormal,
-    should_be_out_of_order,
     should_happen,
 )
 
@@ -53,7 +51,7 @@ def generate_event(
         # rather than stored and tagged ABNORMAL.
         heart_rate = generate_out_of_range_heart_rate()
 
-    elif should_be_abnormal(config.abnormal_probability):
+    elif should_happen(config.abnormal_probability):
         heart_rate = generate_abnormal_heart_rate(
             minimum=config.abnormal_min,
             maximum=config.abnormal_max,
@@ -75,7 +73,7 @@ def generate_event(
             )
         )
 
-    elif should_be_out_of_order(config.out_of_order_probability):
+    elif should_happen(config.out_of_order_probability):
         event_time = event_time - timedelta(
             seconds=generate_backdate_seconds(
                 config.max_backdate_seconds

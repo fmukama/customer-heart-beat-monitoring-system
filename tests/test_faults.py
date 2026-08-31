@@ -7,12 +7,12 @@ import pytest
 
 from consumer.validation import InvalidEventError, validate_event
 from simulator.config import SimulatorConfig
-from simulator.generator import generate_event, generate_events
-from simulator.scenarios import (
+from simulator.faults import (
     generate_backdate_seconds,
     generate_normal_heart_rate,
-    should_be_out_of_order,
+    should_happen,
 )
+from simulator.generator import generate_event, generate_events
 
 
 def config(**overrides) -> SimulatorConfig:
@@ -33,9 +33,9 @@ def test_backdate_is_bounded():
         assert 1.0 <= generate_backdate_seconds(600) <= 600
 
 
-def test_out_of_order_probability_bounds():
-    assert should_be_out_of_order(0.0) is False
-    assert should_be_out_of_order(1.0) is True
+def test_fault_probability_bounds():
+    assert should_happen(0.0) is False
+    assert should_happen(1.0) is True
 
 
 def test_out_of_order_event_time_is_backdated():

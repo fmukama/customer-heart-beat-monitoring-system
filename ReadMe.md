@@ -156,7 +156,7 @@ The two above are **the only cases that cannot be automated**:
   day. Making it probabilistic would repeatedly finalize open windows
   early and push every later event past the grace period — it would
   corrupt the aggregates rather than exercise them.
-- **`toolate` as Scenario G** needs a window that is *already*
+- **`toolate`, the finalized-window case,** needs a window that is *already*
   finalized. The simulator's extreme-late events produce huge lateness,
   but if their window was never opened the aggregator simply opens it,
   so `aggregated=false` cannot be produced reliably by chance. The
@@ -200,7 +200,7 @@ make show-late
 A non-zero late count is the real proof: it requires `event_time` to be
 genuinely backdated, not merely delivered late.
 
-**Windows finalize, then become immutable (Scenario G)**
+**Windows finalize, then become immutable**
 
 ```bash
 make show-daily                 # note event_count for customer-0001
@@ -268,7 +268,7 @@ make lint
 ```
 
 Integration tests run the real consumer against real Kafka and
-PostgreSQL, covering scenarios A–G. They are isolated from the running
+PostgreSQL. They are isolated from the running
 pipeline on both axes — their own topics per test, their own PostgreSQL
 schema built from the real DDL — so a test run cannot corrupt live
 aggregates and the live pipeline cannot skew a test.
@@ -394,7 +394,7 @@ slim:
 ```
 push / PR
   ├── quality      lint → unit tests → docker build
-  └── integration  start stack → wait for first event → scenarios A–G
+  └── integration  start stack → wait for first event → full pipeline
 ```
 
 CI uses the same `make` targets you run locally, so it cannot drift.
@@ -447,10 +447,10 @@ production system would keep the alert store elsewhere.
 **No outbound notification channel is configured.** Alerts land in
 PostgreSQL. Slack and email are stubbed but need credentials.
 
-**Naming differs from the design document.** `draft.txt` says
-`heartbeat-events` and `heartbeat_event.json`; the implementation uses
-`heart-rate-events` and `heart_rate_event.json`. The code is internally
-consistent — the design document predates it.
+**Naming differs from the original design notes**, which used
+`heartbeat-events` and `heartbeat_event.json` where the implementation
+uses `heart-rate-events` and `heart_rate_event.json`. The code is
+internally consistent; the notes predate it.
 
 ---
 
@@ -464,7 +464,7 @@ notifier/    Alertmanager webhook sink, PostgreSQL health probe
 schemas/     JSON Schema — the event contract
 database/    Numbered DDL, applied automatically on first start
 config/      Prometheus scrape config, Grafana provisioning
-tests/       Unit tests, plus tests/integration for scenarios A–G
+tests/       Unit tests, plus tests/integration against the live stack
 scripts/     inject.py (crafted events), measure.py (throughput sampling)
 docs/        Architecture (PlantUML), performance results, evidence checklist
 ```

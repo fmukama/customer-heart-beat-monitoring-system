@@ -1,7 +1,9 @@
 """
-Scenarios A-D from draft.txt section 26.
-
 Kafka -> Consumer -> PostgreSQL, against real infrastructure.
+
+Covers the happy path, abnormal readings, dead-lettering of malformed
+events, retry on a transient database failure, and idempotency under
+at-least-once delivery.
 """
 
 import uuid
@@ -25,7 +27,7 @@ def customer() -> str:
     return f"itest-{uuid.uuid4().hex[:10]}"
 
 
-def test_scenario_a_normal_event_reaches_postgres(
+def test_valid_event_is_stored_with_normal_status(
     publish, build_consumer, db, customer
 ):
     publish(make_event(customer, heart_rate=72))
@@ -42,7 +44,7 @@ def test_scenario_a_normal_event_reaches_postgres(
     assert stored[0]["is_late"] is False
 
 
-def test_scenario_a_ingestion_time_is_recorded_separately(
+def test_ingestion_time_is_recorded_separately_from_event_time(
     publish, build_consumer, db, customer
 ):
     event = make_event(customer)
@@ -61,7 +63,7 @@ def test_scenario_a_ingestion_time_is_recorded_separately(
 
 
 @pytest.mark.parametrize("heart_rate", [45, 180])
-def test_scenario_b_abnormal_event_is_stored_and_tagged(
+def test_abnormal_reading_is_stored_and_tagged(
     publish, build_consumer, db, customer, heart_rate
 ):
     publish(make_event(customer, heart_rate=heart_rate))
@@ -81,7 +83,7 @@ def test_scenario_b_abnormal_event_is_stored_and_tagged(
     assert aggregates(db, customer)[0]["abnormal_count"] == 1
 
 
-def test_scenario_c_invalid_event_goes_to_dlq_not_postgres(
+def test_malformed_event_reaches_dlq_and_not_postgres(
     publish, build_consumer, db, customer, topics, bootstrap_servers
 ):
     _, dlq_topic = topics
@@ -109,7 +111,7 @@ def test_scenario_c_invalid_event_goes_to_dlq_not_postgres(
     assert failure["failed_at"]
 
 
-def test_scenario_c_out_of_range_heart_rate_goes_to_dlq(
+def test_out_of_range_reading_reaches_dlq(
     publish, build_consumer, db, customer, topics, bootstrap_servers
 ):
     _, dlq_topic = topics
@@ -128,7 +130,7 @@ def test_scenario_c_out_of_range_heart_rate_goes_to_dlq(
     assert "250" in failure["error_message"]
 
 
-def test_scenario_d_temporary_failure_retries_then_succeeds(
+def test_transient_database_failure_is_retried_until_it_succeeds(
     publish, build_consumer, db, customer, monkeypatch
 ):
     publish(make_event(customer, heart_rate=88))
