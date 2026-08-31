@@ -9,6 +9,17 @@ from .windows import get_day_window
 
 
 @dataclass(frozen=True)
+class Lateness:
+    """
+    How an event sits relative to the watermark.
+    """
+
+    is_late: bool
+
+    lateness_seconds: float
+
+
+@dataclass(frozen=True)
 class EventOutcome:
     """
     What happened to one event's contribution to its window.
@@ -119,13 +130,15 @@ class DailyAggregator:
             abnormal_count=row["abnormal_count"],
         )
 
-    def add_event(
-        self,
-        customer_id: str,
-        heart_rate: int,
-        event_time: datetime,
-        is_abnormal: bool,
-    ) -> EventOutcome:
+    def observe(self, event_time: datetime) -> Lateness:
+        """
+        Advance the watermark and judge lateness. No window is touched.
+
+        Separate from add_to_window because the consumer must know
+        is_late *before* writing the raw row, but must only update
+        window state *after* the write proves the event was not a
+        duplicate. Doing both in one step double-counts redeliveries.
+        """
 
         previous_watermark = self.watermark_tracker.watermark
 
@@ -144,16 +157,31 @@ class DailyAggregator:
             else 0.0
         )
 
+        return Lateness(
+            is_late=late,
+            lateness_seconds=lateness,
+        )
+
+    def add_to_window(
+        self,
+        customer_id: str,
+        heart_rate: int,
+        event_time: datetime,
+        is_abnormal: bool,
+    ) -> bool:
+        """
+        Fold one event into its window.
+
+        Returns False when the window is already finalized, meaning the
+        aggregate was deliberately left alone.
+        """
+
         window_start, _ = get_day_window(event_time)
 
         key = (customer_id, window_start)
 
         if key in self.finalized:
-            return EventOutcome(
-                is_late=late,
-                lateness_seconds=lateness,
-                aggregated=False,
-            )
+            return False
 
         state = self.windows.get(key)
 
@@ -162,11 +190,7 @@ class DailyAggregator:
 
             if state is None:
                 # Finalized in a previous run of this consumer.
-                return EventOutcome(
-                    is_late=late,
-                    lateness_seconds=lateness,
-                    aggregated=False,
-                )
+                return False
 
             self.windows[key] = state
 
@@ -175,10 +199,35 @@ class DailyAggregator:
             is_abnormal=is_abnormal,
         )
 
+        return True
+
+    def add_event(
+        self,
+        customer_id: str,
+        heart_rate: int,
+        event_time: datetime,
+        is_abnormal: bool,
+    ) -> EventOutcome:
+        """
+        Observe and aggregate in one step.
+
+        Convenient when there is no database round trip in between, as
+        in the unit tests. The consumer uses the two calls separately.
+        """
+
+        lateness = self.observe(event_time)
+
+        aggregated = self.add_to_window(
+            customer_id=customer_id,
+            heart_rate=heart_rate,
+            event_time=event_time,
+            is_abnormal=is_abnormal,
+        )
+
         return EventOutcome(
-            is_late=late,
-            lateness_seconds=lateness,
-            aggregated=True,
+            is_late=lateness.is_late,
+            lateness_seconds=lateness.lateness_seconds,
+            aggregated=aggregated,
         )
 
     def finalize_ready_windows(self) -> list[WindowAggregate]:

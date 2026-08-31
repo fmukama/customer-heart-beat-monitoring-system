@@ -242,3 +242,65 @@ def test_no_loader_still_works():
     add(subject, day=30, heart_rate=65)
 
     assert subject.snapshot_open_windows()[0].event_count == 1
+
+
+def test_observe_does_not_touch_any_window():
+    # The split exists so a duplicate delivery can advance the
+    # watermark without being folded into the aggregate.
+    subject = aggregator()
+
+    lateness = subject.observe(at(30, 12))
+
+    assert lateness.is_late is False
+    assert subject.snapshot_open_windows() == []
+    assert subject.watermark is not None
+
+
+def test_observe_still_judges_lateness():
+    subject = aggregator()
+
+    subject.observe(at(30, 12))
+
+    lateness = subject.observe(at(30, 10))
+
+    assert lateness.is_late is True
+    assert lateness.lateness_seconds > 0
+
+
+def test_add_to_window_can_be_called_once_per_stored_event():
+    # Simulates the consumer: observe every delivery, but only fold in
+    # the ones the database actually accepted.
+    subject = aggregator()
+
+    for _ in range(3):
+        subject.observe(at(30, 12))
+
+    subject.add_to_window(
+        customer_id="customer-0001",
+        heart_rate=70,
+        event_time=at(30, 12),
+        is_abnormal=False,
+    )
+
+    snapshot = subject.snapshot_open_windows()[0]
+
+    # Three deliveries, one stored row, one counted event.
+    assert snapshot.event_count == 1
+
+
+def test_add_to_window_refuses_a_finalized_window():
+    subject = aggregator(lateness_hours=1)
+
+    add(subject, day=30, hour=12)
+    add(subject, day=31, hour=6)
+
+    subject.finalize_ready_windows()
+
+    accepted = subject.add_to_window(
+        customer_id="customer-0001",
+        heart_rate=200,
+        event_time=at(30, 13),
+        is_abnormal=True,
+    )
+
+    assert accepted is False

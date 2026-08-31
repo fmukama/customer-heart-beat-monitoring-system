@@ -53,7 +53,7 @@ help:
 	@echo make build - build the application images
 	@echo make lint - run Ruff
 	@echo make lint-fix - run Ruff with --fix
-	@echo make test - run the 92 unit tests
+	@echo make test - run the 96 unit tests
 	@echo make simulator - preview raw events, no Kafka involved
 	@echo == 2. START THE STACK ==
 	@echo make up - start everything
@@ -92,7 +92,7 @@ help:
 	@echo make show-notifications - alert history from PostgreSQL
 	@echo make alert-demo - stop the consumer, watch ConsumerDown fire
 	@echo == 8. TEST AGAINST THE LIVE STACK ==
-	@echo make test-integration - the 27 integration tests
+	@echo make test-integration - the 29 integration tests
 	@echo make test-all - unit plus integration
 	@echo == 9. LOAD AND SCALING ==
 	@echo make load-up RATE=1000 CONSUMERS=2 - scale up under load

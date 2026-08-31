@@ -98,22 +98,19 @@ class HeartRateConsumer:
 
             event["status"] = status
 
-            outcome = self.aggregator.add_event(
-                customer_id=event["customer_id"],
-                heart_rate=event["heart_rate"],
-                event_time=event_time,
-                is_abnormal=status == "ABNORMAL",
-            )
+            # Watermark and lateness first: is_late is a column on the
+            # raw row, so it must be known before the insert.
+            lateness = self.aggregator.observe(event_time)
 
-            event["is_late"] = outcome.is_late
+            event["is_late"] = lateness.is_late
 
             event["lateness_seconds"] = (
-                outcome.lateness_seconds
-                if outcome.is_late
+                lateness.lateness_seconds
+                if lateness.is_late
                 else None
             )
 
-            retry_with_backoff(
+            inserted = retry_with_backoff(
                 lambda: insert_event(
                     self.connection,
                     event,
@@ -125,19 +122,34 @@ class HeartRateConsumer:
 
             metrics.messages_processed.inc()
 
-            if status == "ABNORMAL":
-                metrics.abnormal_events.inc()
+            # Only fold genuinely new events into the window. A
+            # redelivery is refused by ON CONFLICT, and counting it
+            # anyway would inflate the aggregate above the raw count.
+            aggregated = False
 
-            if outcome.is_late:
+            if inserted:
+                aggregated = self.aggregator.add_to_window(
+                    customer_id=event["customer_id"],
+                    heart_rate=event["heart_rate"],
+                    event_time=event_time,
+                    is_abnormal=status == "ABNORMAL",
+                )
+
+                if status == "ABNORMAL":
+                    metrics.abnormal_events.inc()
+            else:
+                metrics.duplicates_ignored.inc()
+
+            if lateness.is_late:
                 metrics.late_events.labels(
-                    aggregated=str(outcome.aggregated).lower(),
+                    aggregated=str(aggregated).lower(),
                 ).inc()
 
                 logger.info(
                     "Late event: event=%s lateness=%.1fs aggregated=%s",
                     event["event_id"],
-                    outcome.lateness_seconds,
-                    outcome.aggregated,
+                    lateness.lateness_seconds,
+                    aggregated,
                 )
 
             self.observe_watermark()

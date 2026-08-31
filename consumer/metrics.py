@@ -78,6 +78,13 @@ windows_finalized = Counter(
     "Windows closed and persisted.",
 )
 
+# Redeliveries refused by ON CONFLICT. Counted so the aggregate can be
+# reconciled against the raw table.
+duplicates_ignored = Counter(
+    "consumer_duplicates_ignored_total",
+    "Events already stored, so not folded into a window again.",
+)
+
 
 def serve(port: int) -> None:
     start_http_server(port)

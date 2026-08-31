@@ -199,3 +199,60 @@ def test_aggregate_reflects_every_stored_event(
     assert aggregate["average_heart_rate"] == pytest.approx(107.5)
     assert aggregate["abnormal_count"] == 1
     assert aggregate["is_finalized"] is False
+
+
+def test_duplicate_does_not_inflate_the_aggregate(
+    publish, build_consumer, db, customer
+):
+    """
+    A redelivery is refused by ON CONFLICT, so it must not be counted
+    in the window either. Otherwise the aggregate drifts above the raw
+    count and reconciliation fails.
+    """
+
+    event = make_event(customer, heart_rate=80)
+
+    publish(event)
+    publish(event)
+    publish(make_event(customer, heart_rate=60))
+
+    subject = build_consumer()
+
+    drain(subject, expected=3)
+
+    subject.flush_windows(force=True)
+
+    stored = rows(db, customer)
+
+    aggregate = aggregates(db, customer)[0]
+
+    # Two distinct readings from three deliveries.
+    assert len(stored) == 2
+    assert aggregate["event_count"] == 2
+    assert aggregate["average_heart_rate"] == pytest.approx(70.0)
+
+
+def test_aggregate_matches_raw_count_under_redelivery(
+    publish, build_consumer, db, customer
+):
+    events = [
+        make_event(customer, heart_rate=70 + index)
+        for index in range(5)
+    ]
+
+    for event in events:
+        publish(event)
+
+    # Redeliver two of them.
+    publish(events[0])
+    publish(events[3])
+
+    subject = build_consumer()
+
+    drain(subject, expected=7)
+
+    subject.flush_windows(force=True)
+
+    assert aggregates(db, customer)[0]["event_count"] == len(
+        rows(db, customer)
+    )

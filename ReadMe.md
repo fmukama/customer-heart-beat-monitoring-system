@@ -261,8 +261,8 @@ parallelism. Measured numbers: **[docs/performance.md](docs/performance.md)**.
 ### Automated tests
 
 ```bash
-make test               # 92 unit tests, no stack needed
-make test-integration   # 27 integration tests, needs `make up`
+make test               # 96 unit tests, no stack needed
+make test-integration   # 29 integration tests, needs `make up`
 make test-all
 make lint
 ```
@@ -411,10 +411,17 @@ probability, watermark lag, allowed lateness, and flush interval.
 
 ## Known limitations
 
-**Aggregates are not idempotent per event.** Raw inserts are protected by
-`ON CONFLICT DO NOTHING`; window state is not. After a hard crash with
-uncommitted offsets, redelivered events would be double-counted in their
-window. Raw data stays correct, so aggregates can be rebuilt from it.
+**Aggregates depend on the insert result, not on delivery.** A
+redelivered event is refused by `ON CONFLICT` and is therefore *not*
+folded into its window either — the consumer calls `observe()` for every
+delivery but `add_to_window()` only when the insert actually created a
+row. That keeps `event_count` equal to the raw count under
+at-least-once delivery. Verified live: 331 deliveries, 2 duplicates
+ignored, 329 rows, 329 distinct, every open window reconciling.
+
+The residual gap is a hard crash *between* the insert and the in-memory
+update, which would lose that event's contribution to the window until
+the aggregate is rebuilt from raw. Raw data is always authoritative.
 
 **Throughput caps at ~57–65 events/sec per consumer**, set by two
 synchronous round trips per event (database commit, Kafka offset
