@@ -4,7 +4,7 @@ Simulated heart-rate sensors → Kafka → event-time stream processing with
 watermarks and 1-day tumbling windows → PostgreSQL, with Prometheus and
 Grafana for observability.
 
-**Everything runs in Docker. No host Python required.**
+**Everything runs in Docker.**
 
 ```bash
 make up      # start the whole stack
@@ -38,27 +38,12 @@ click.
 
 ---
 
-## Architecture
-
-```
-Simulator → Producer → Kafka → Consumer → PostgreSQL
-                                  │
-                       invalid ───┴──→ DLQ topic
-                                  │
-                       metrics ───┴──→ Prometheus → Grafana
-                                            │
-                                     Alertmanager → notifier → notifications
-```
-
-Diagrams (PlantUML), component responsibilities, and every failure path:
-**[docs/architecture.md](docs/architecture.md)**.
-
-### Technology choices
+## Technology choices
 
 | Choice | Why |
 | --- | --- |
-| Kafka 4.0, **KRaft** | Durable replayable partitioned log; KRaft removes ZooKeeper entirely |
-| **Python** consumer, no Flink | The windowing and watermark logic is the learning objective — inspectable and unit-testable |
+| Kafka 4.0, **KRaft** | Durable replayable partitioned log.|
+| **Python** consumer, no Flink | The windowing and watermark logic is the learning objective|
 | PostgreSQL 17 | Indexed time-series storage with the `ON CONFLICT` upsert idempotency needs |
 | Prometheus + Grafana | Application metrics belong in a time-series store, not the operational database |
 | JSON Schema | One machine-checkable definition of a valid event |
@@ -101,11 +86,7 @@ Unknown fields are rejected.
 
 ---
 
-## Testing the pipeline in every corner
-
-**The simulator produces every fault continuously — you do not have to
-inject anything to get evidence.** Each rate is independently tunable in
-[.env.example](.env.example); set them all to `0` for a clean stream.
+## Testing the pipeline.
 
 | Fault | Default rate | Models |
 | --- | --- | --- |
@@ -121,20 +102,6 @@ One command shows what the pipeline handled:
 ```bash
 make show-faults
 ```
-
-```
- total | normal | abnormal | late | extreme_late | worst_late_s
-  8391 |   7914 |      477 |  273 |           49 |       171148
-
- stored | distinct_ids | duplicate_rows
-   8392 |         8392 |              0
-
- consumer_dlq_messages_total 62
-```
-
-Worst lateness of 171,148s is ~47 hours — the extreme-late fault. And
-`duplicate_rows = 0` despite a 1% duplicate rate is the idempotency
-guarantee on live traffic rather than in a test.
 
 ### On-demand injection
 
