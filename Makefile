@@ -1,11 +1,22 @@
-.PHONY: help build lint lint-fix test test-unit test-integration test-all up down restart logs ps topics simulator producer consumer psql shell clean load-up load-down lag throughput
+.PHONY: help build lint lint-fix test test-unit test-integration test-all up down restart logs ps topics simulator producer consumer psql shell clean load-up load-down lag throughput urls adminer grafana prometheus metrics inject show-raw show-daily show-late show-dlq reconcile diagrams
 
 COMPOSE := docker compose
 DEV     := $(COMPOSE) run --rm dev
 
 POSTGRES_USER ?= heartbeat_user
+POSTGRES_PASSWORD ?= heartbeat_password
 POSTGRES_DB   ?= heartbeat
+POSTGRES_PORT ?= 5432
+ADMINER_PORT ?= 8080
+GRAFANA_PORT ?= 3000
+GRAFANA_ADMIN_USER ?= admin
+GRAFANA_ADMIN_PASSWORD ?= admin_password
+PROMETHEUS_PORT ?= 9090
+METRICS_PORT ?= 8000
 KAFKA_CONSUMER_GROUP_ID ?= heartbeat-consumer-group
+KAFKA_HEART_RATE_DLQ_TOPIC ?= heart-rate-events-dlq
+WHAT ?= normal
+N ?= 1
 
 help:
 	@echo Everything runs in Docker. No host Python required.
@@ -21,6 +32,12 @@ help:
 	@echo   make restart     Rebuild and restart producer and consumer
 	@echo   make logs        Follow all logs
 	@echo   make ps          Show service status
+	@echo   ---- dashboards ----
+	@echo   make urls        Print every UI endpoint and credential
+	@echo   make adminer     PostgreSQL browser  http://localhost:8080
+	@echo   make grafana     Dashboards          http://localhost:3000
+	@echo   make prometheus  Metrics and targets http://localhost:9090
+	@echo   make metrics     Raw consumer metrics
 	@echo   ---- inspect ----
 	@echo   make topics      List Kafka topics
 	@echo   make simulator   Print raw events, no Kafka
@@ -28,11 +45,19 @@ help:
 	@echo   make consumer    Follow consumer logs
 	@echo   make psql        Open a psql shell
 	@echo   make shell       Open a shell in the dev image
+	@echo   ---- verify the pipeline ----
+	@echo   make inject WHAT=late   Publish one crafted event
+	@echo   make show-raw    Recent raw events
+	@echo   make show-daily  Daily aggregates
+	@echo   make show-late   Late event summary
+	@echo   make show-dlq    Read the dead letter topic
+	@echo   make reconcile   Check aggregates match raw counts
 	@echo   ---- load ----
 	@echo   make load-up RATE=1000 CONSUMERS=3   Scale up under load
 	@echo   make lag         Show Kafka consumer group lag and assignment
 	@echo   make throughput  Sample throughput and lag from Prometheus
 	@echo   make load-down   Tear down the load overlay
+	@echo   make diagrams    Re-render the PlantUML diagrams
 	@echo   ---- reset ----
 	@echo   make clean       Stop the stack and delete all volumes
 
@@ -111,6 +136,51 @@ shell:
 	$(DEV) bash
 
 
+PSQL := $(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
+
+urls:
+	@echo   Adminer     http://localhost:$(ADMINER_PORT)    server=postgres db=$(POSTGRES_DB) user=$(POSTGRES_USER) pass=$(POSTGRES_PASSWORD)
+	@echo   Grafana     http://localhost:$(GRAFANA_PORT)    user=$(GRAFANA_ADMIN_USER) pass=$(GRAFANA_ADMIN_PASSWORD)
+	@echo   Prometheus  http://localhost:$(PROMETHEUS_PORT)
+	@echo   Metrics     http://localhost:$(METRICS_PORT)/metrics
+	@echo   PostgreSQL  localhost:$(POSTGRES_PORT)
+
+adminer: urls
+grafana: urls
+prometheus: urls
+
+metrics:
+	$(DEV) python -c "import urllib.request;print(urllib.request.urlopen('http://consumer:8000/metrics').read().decode())"
+
+
+inject:
+	$(DEV) python scripts/inject.py $(WHAT)
+
+
+show-raw:
+	$(PSQL) -c "SELECT customer_id, heart_rate, status, is_late, round(lateness_seconds::numeric,1) AS late_s, event_time FROM heart_rate_events ORDER BY ingestion_time DESC LIMIT 15;"
+
+
+show-daily:
+	$(PSQL) -c "SELECT customer_id, window_start, event_count, round(average_heart_rate::numeric,1) AS avg, minimum_heart_rate AS min, maximum_heart_rate AS max, abnormal_count, is_finalized FROM heart_rate_daily ORDER BY window_start DESC, customer_id LIMIT 15;"
+
+
+show-late:
+	$(PSQL) -c "SELECT count(*) FILTER (WHERE is_late) AS late, count(*) AS total, round(max(lateness_seconds)::numeric,1) AS worst_lateness FROM heart_rate_events;"
+
+
+show-dlq:
+	$(COMPOSE) exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:29092 --topic $(KAFKA_HEART_RATE_DLQ_TOPIC) --from-beginning --max-messages $(N) --timeout-ms 15000
+
+
+# Only open windows can reconcile with raw counts. A finalized window is
+# immutable, so events arriving afterwards are stored raw and deliberately
+# left out of the aggregate.
+reconcile:
+	$(PSQL) -c "SELECT d.customer_id, d.window_start::date AS window, d.event_count AS aggregated, r.raw, d.event_count = r.raw AS reconciles FROM heart_rate_daily d JOIN (SELECT customer_id, date_trunc('day', event_time) AS w, count(*) AS raw FROM heart_rate_events GROUP BY 1,2) r ON r.customer_id = d.customer_id AND r.w = d.window_start WHERE NOT d.is_finalized ORDER BY 1 LIMIT 10;"
+	$(PSQL) -c "SELECT count(*) AS open_windows, count(*) FILTER (WHERE ok) AS reconciling FROM (SELECT d.event_count = r.raw AS ok FROM heart_rate_daily d JOIN (SELECT customer_id, date_trunc('day', event_time) AS w, count(*) AS raw FROM heart_rate_events GROUP BY 1,2) r ON r.customer_id = d.customer_id AND r.w = d.window_start WHERE NOT d.is_finalized) s;"
+
+
 LOAD := $(COMPOSE) -f docker-compose.yml -f docker-compose.load.yml
 
 RATE      ?= 100
@@ -134,6 +204,11 @@ SAMPLE ?= 0
 throughput: export SAMPLE := $(SAMPLE)
 throughput:
 	$(DEV) python scripts/measure.py
+
+
+diagrams:
+	docker run --rm -v "$(CURDIR)/docs:/data" plantuml/plantuml:latest -tpng /data/dataflow.puml /data/deployment.puml
+	docker run --rm -v "$(CURDIR)/docs:/data" plantuml/plantuml:latest -tsvg /data/dataflow.puml /data/deployment.puml
 
 
 clean:

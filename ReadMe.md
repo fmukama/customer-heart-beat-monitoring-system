@@ -1,0 +1,347 @@
+# Real-Time Customer Heartbeat Monitoring System
+
+Simulated heart-rate sensors → Kafka → event-time stream processing with
+watermarks and 1-day tumbling windows → PostgreSQL, with Prometheus and
+Grafana for observability.
+
+**Everything runs in Docker. No host Python required.**
+
+```bash
+make up      # start the whole stack
+make urls    # every dashboard URL and credential
+make help    # every target
+```
+
+---
+
+## Quick start
+
+```bash
+cp .env.example .env   # optional, every value has a default
+make up
+make urls
+```
+
+| Service | URL | Credentials |
+| --- | --- | --- |
+| **Grafana** dashboards | http://localhost:3000 | `admin` / `admin_password` |
+| **Adminer** (PostgreSQL) | http://localhost:8080 | server `postgres`, db `heartbeat`, user `heartbeat_user`, pass `heartbeat_password` |
+| **Prometheus** | http://localhost:9090 | — |
+| Consumer metrics | http://localhost:8000/metrics | — |
+
+`make adminer`, `make grafana`, `make prometheus` print the URL and
+credentials for each. Grafana's dashboard (**Heartbeat Pipeline**,
+9 panels) and its datasource are provisioned automatically — nothing to
+click.
+
+---
+
+## Architecture
+
+```
+Simulator → Producer → Kafka → Consumer → PostgreSQL
+                                  │
+                       invalid ───┴──→ DLQ topic
+                                  │
+                       metrics ───┴──→ Prometheus → Grafana
+```
+
+Diagrams (PlantUML), component responsibilities, and every failure path:
+**[docs/architecture.md](docs/architecture.md)**.
+
+### Technology choices
+
+| Choice | Why |
+| --- | --- |
+| Kafka 4.0, **KRaft** | Durable replayable partitioned log; KRaft removes ZooKeeper entirely |
+| **Python** consumer, no Flink | The windowing and watermark logic is the learning objective — inspectable and unit-testable |
+| PostgreSQL 17 | Indexed time-series storage with the `ON CONFLICT` upsert idempotency needs |
+| Prometheus + Grafana | Application metrics belong in a time-series store, not the operational database |
+| JSON Schema | One machine-checkable definition of a valid event |
+
+Kafka runs two listeners — `kafka:29092` for containers, `localhost:9092`
+for the host. A single listener cannot serve both: a container told to
+reconnect to `localhost` would dial itself.
+
+Topics are created by a `kafka-init` service that runs once and exits;
+app services gate on it, and auto-creation is off.
+
+| Topic | Partitions | Replication | Retention |
+| --- | --- | --- | --- |
+| `heart-rate-events` | 3 | 1 | 7 days |
+| `heart-rate-events-dlq` | 3 | 1 | 30 days |
+
+---
+
+## Event schema
+
+[`schemas/heart_rate_event.json`](schemas/heart_rate_event.json) is the
+single source of truth, loaded and enforced at runtime.
+
+```json
+{
+  "event_id": "3f2b1c94-...",
+  "customer_id": "customer-0001",
+  "heart_rate": 75,
+  "event_time": "2026-08-30T10:00:00+00:00"
+}
+```
+
+`event_id` is a UUID and the primary key. `customer_id` is the Kafka
+partition key, so a customer's events stay ordered on one partition.
+`heart_rate` is an integer 20–250. `event_time` needs a timezone offset.
+Unknown fields are rejected.
+
+**Abnormal is not invalid.** 45 or 180 bpm is stored and tagged
+`ABNORMAL`. Only structurally broken events are dead-lettered.
+
+---
+
+## Testing the pipeline in every corner
+
+`make inject WHAT=<case>` publishes one crafted event. Give the consumer
+a few seconds, then inspect.
+
+```bash
+make inject WHAT=normal        # valid    → stored NORMAL
+make inject WHAT=abnormal      # 185 bpm  → stored ABNORMAL
+make inject WHAT=invalid       # bad UUID → DLQ
+make inject WHAT=outofrange    # 600 bpm  → DLQ (schema violation)
+make inject WHAT=late          # -2h      → stored, is_late = true
+make inject WHAT=duplicate     # same id twice → exactly one row
+make inject WHAT=future        # +3d      → advances watermark, closes windows
+make inject WHAT=toolate       # -2d      → raw kept, finalized window untouched
+```
+
+Inspect the result:
+
+```bash
+make show-raw       # recent events with status, is_late, lateness
+make show-daily     # daily aggregates, open and finalized
+make show-late      # late count and worst lateness
+make show-dlq N=3   # read the dead letter topic
+make reconcile      # aggregates vs raw counts
+make metrics        # raw Prometheus metrics
+make throughput     # rates, latency percentiles, watermark lag
+```
+
+### Walkthroughs for each guarantee
+
+**Invalid → DLQ, and nothing reaches PostgreSQL**
+
+```bash
+make inject WHAT=outofrange
+make show-dlq
+```
+
+The DLQ payload carries the schema's own message, the original event,
+and the source topic / partition / offset. The offset is committed
+**only after** the DLQ write is acknowledged — if the DLQ fails, Kafka
+redelivers rather than dropping.
+
+**Late events are detected and measured**
+
+```bash
+make inject WHAT=late
+make show-late
+```
+
+A non-zero late count is the real proof: it requires `event_time` to be
+genuinely backdated, not merely delivered late.
+
+**Windows finalize, then become immutable (Scenario G)**
+
+```bash
+make show-daily                 # note event_count for customer-0001
+make inject WHAT=future         # jump the watermark 3 days ahead
+make show-daily                 # windows now is_finalized = true
+make inject WHAT=toolate        # 240 bpm into the closed window
+make show-raw                   # stored, is_late = true
+make show-daily                 # aggregate UNCHANGED
+```
+
+**Idempotency under at-least-once delivery**
+
+```bash
+make inject WHAT=duplicate
+make show-raw     # the event_id appears exactly once
+```
+
+**Aggregates reconcile with raw data**
+
+```bash
+docker compose stop producer    # let one flush interval pass
+make reconcile                  # every open window: reconciles = t
+docker compose start producer
+```
+
+Two things make this check meaningful only under those conditions:
+
+- Stop the producer first. While it runs, the open-window snapshot
+  legitimately trails the raw table by up to
+  `WINDOW_FLUSH_INTERVAL_SECONDS`.
+- `make reconcile` compares **open windows only**. A finalized window is
+  immutable, so events arriving after it closed are stored raw and
+  deliberately excluded from the aggregate. Comparing global totals
+  after any window has finalized would report a mismatch that is in fact
+  the policy working correctly.
+
+**State survives a consumer restart**
+
+```bash
+make reconcile
+docker compose restart consumer
+make consumer          # look for window state being reloaded
+make reconcile         # still reconciles, not reset to a partial
+```
+
+**Scaling and partition assignment**
+
+```bash
+make load-up RATE=1000 CONSUMERS=2
+make lag               # per-partition lag and which consumer owns what
+make throughput SAMPLE=90
+make load-down
+```
+
+With 3 partitions and 4 consumers, one consumer is assigned zero
+partitions and idles — partition count is the ceiling on useful
+parallelism. Measured numbers: **[docs/performance.md](docs/performance.md)**.
+
+### Automated tests
+
+```bash
+make test               # 65 unit tests, no stack needed
+make test-integration   # 15 integration tests, needs `make up`
+make test-all
+make lint
+```
+
+Integration tests run the real consumer against real Kafka and
+PostgreSQL, covering scenarios A–G. They are isolated from the running
+pipeline on both axes — their own topics per test, their own PostgreSQL
+schema built from the real DDL — so a test run cannot corrupt live
+aggregates and the live pipeline cannot skew a test.
+
+---
+
+## How the stream processing works
+
+**Watermark** — `max_event_time_seen − ALLOWED_OUT_OF_ORDERNESS_SECONDS`.
+Moves forward, never backward, derived from event time only. An event is
+never late relative to itself: lateness is judged against the watermark
+*before* that event was applied. `consumer_watermark_lag_seconds` sits
+at roughly the configured out-of-orderness on a healthy stream.
+
+**Windows** — 1-day tumbling, `00:00 → 24:00` UTC, non-overlapping,
+assigned from `event_time`. State is held in memory per
+`(customer_id, window_start)` and written to `heart_rate_daily`. Open
+windows are snapshotted every `WINDOW_FLUSH_INTERVAL_SECONDS` with
+`is_finalized = false`, so today is queryable before it closes. A window
+finalizes once the watermark passes `window_end + ALLOWED_LATENESS_SECONDS`.
+
+**Late events** — three outcomes:
+
+| Arrival | Raw row | Aggregate |
+| --- | --- | --- |
+| On time, or within allowed out-of-orderness | Stored, `is_late=false` | Updated |
+| Late, window still open | Stored, `is_late=true`, lateness recorded | Updated — correct window, by event time |
+| Past allowed lateness, window finalized | Stored, `is_late=true`, lateness recorded | **Unchanged** |
+
+Raw data is never discarded; a finalized window is immutable. Late
+events are never treated as invalid and never reach the DLQ — lateness
+is a timing property, not a validity one.
+
+The simulator creates genuinely out-of-order events by **backdating
+`event_time`**. Delaying delivery alone would not work: `event_time`
+would still increase monotonically, so nothing could ever be late.
+
+**Restart** — offsets commit as events are processed, so a restarted
+consumer never re-reads them. Window state is reloaded from PostgreSQL
+lazily, on the first event for each window. Lazy loading is what makes
+scaling safe: a worker only owns windows it actually receives events
+for.
+
+---
+
+## Monitoring
+
+`consumer_messages_processed_total`,
+`consumer_messages_failed_total{reason}`, `consumer_dlq_messages_total`,
+`consumer_abnormal_events_total`,
+`consumer_late_events_total{aggregated}`,
+`consumer_processing_seconds` (histogram),
+`consumer_watermark_lag_seconds`, `consumer_windows_open`,
+`consumer_windows_finalized_total`.
+
+Prometheus discovers consumers by DNS, so scraping follows replicas when
+scaled.
+
+---
+
+## CI/CD
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — deliberately
+slim:
+
+```
+push / PR
+  ├── quality      lint → unit tests → docker build
+  └── integration  start stack → wait for first event → scenarios A–G
+```
+
+CI uses the same `make` targets you run locally, so it cannot drift.
+
+---
+
+## Configuration
+
+Everything is environment-driven — see [.env.example](.env.example).
+Nothing needs a source edit, including event rate, out-of-order
+probability, watermark lag, allowed lateness, and flush interval.
+
+---
+
+## Known limitations
+
+**Aggregates are not idempotent per event.** Raw inserts are protected by
+`ON CONFLICT DO NOTHING`; window state is not. After a hard crash with
+uncommitted offsets, redelivered events would be double-counted in their
+window. Raw data stays correct, so aggregates can be rebuilt from it.
+
+**Throughput caps at ~57–65 events/sec per consumer**, set by two
+synchronous round trips per event (database commit, Kafka offset
+commit). Batching would raise it at the cost of per-event durability.
+
+**Memory grows with `customers × open windows`.** Fine at this scale; a
+very large customer set with long allowed lateness would need spilling.
+
+**Single-node infrastructure** — one broker, replication factor 1, one
+PostgreSQL. No failover.
+
+**The producer is single-threaded** and caps near 3,450 events/sec, so
+the design doc's 5,000/sec target was not reached on the input side.
+
+**No authentication** — Kafka is `PLAINTEXT`, and PostgreSQL, Grafana and
+Adminer use development credentials. Local development only.
+
+**Naming differs from the design document.** `draft.txt` says
+`heartbeat-events` and `heartbeat_event.json`; the implementation uses
+`heart-rate-events` and `heart_rate_event.json`. The code is internally
+consistent — the design document predates it.
+
+---
+
+## Layout
+
+```
+simulator/   Synthetic event generation
+producer/    Kafka publishing
+consumer/    Validation, classification, event time, windowing, persistence
+schemas/     JSON Schema — the event contract
+database/    Numbered DDL, applied automatically on first start
+config/      Prometheus scrape config, Grafana provisioning
+tests/       Unit tests, plus tests/integration for scenarios A–G
+scripts/     inject.py (crafted events), measure.py (throughput sampling)
+docs/        Architecture (PlantUML), performance results, evidence checklist
+```

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  quality:
+    name: Lint, unit tests, image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Everything runs through Docker, so there is no host Python setup.
+      - name: Build dev image
+        run: docker compose build dev
+
+      - name: Lint
+        run: make lint
+
+      - name: Unit tests
+        run: make test
+
+      - name: Build runtime images
+        run: docker compose build
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: quality
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the stack
+        run: make up
+
+      # Compose healthchecks gate the app services, so reaching this
+      # point means Kafka and PostgreSQL are already healthy. This waits
+      # for the pipeline to actually move an event end to end.
+      - name: Wait for first ingested event
+        run: |
+          for attempt in $(seq 1 30); do
+            count=$(docker compose exec -T postgres \
+              psql -U heartbeat_user -d heartbeat -t -A \
+              -c "SELECT count(*) FROM heart_rate_events" 2>/dev/null || echo 0)
+            if [ "${count:-0}" -gt 0 ]; then
+              echo "Pipeline live after ${attempt} attempt(s), ${count} event(s)."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Pipeline did not ingest anything in time."
+          exit 1
+
+      - name: Integration tests
+        run: make test-integration
+
+      - name: Verify topics exist
+        if: always()
+        run: make topics
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: make clean

@@ -14,6 +14,8 @@ dist/
 *.egg-info/
 #
 draft.txt
+*.puml
+evidence.md
 # Testing
 .pytest_cache/
 .coverage
