@@ -17,7 +17,7 @@ from .errors import (
 )
 from .repository import (
     insert_event,
-    load_open_windows,
+    load_window,
     upsert_daily_aggregate,
 )
 from .retry import retry_with_backoff
@@ -67,19 +67,17 @@ class HeartRateConsumer:
             allowed_lateness=timedelta(
                 seconds=config.allowed_lateness_seconds,
             ),
+            window_loader=self.load_window_state,
         )
-
-        restored = self.aggregator.rehydrate(
-            load_open_windows(self.connection)
-        )
-
-        if restored:
-            logger.info(
-                "Restored %d open window(s) from PostgreSQL.",
-                restored,
-            )
 
         self.last_flush = time.monotonic()
+
+    def load_window_state(self, customer_id, window_start):
+        return load_window(
+            self.connection,
+            customer_id,
+            window_start,
+        )
 
     def process_message(self, message) -> None:
 

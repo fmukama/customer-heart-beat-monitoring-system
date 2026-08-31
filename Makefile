@@ -1,10 +1,11 @@
-.PHONY: help build lint lint-fix test test-unit test-integration test-all up down restart logs ps topics simulator producer consumer psql shell clean
+.PHONY: help build lint lint-fix test test-unit test-integration test-all up down restart logs ps topics simulator producer consumer psql shell clean load-up load-down lag throughput
 
 COMPOSE := docker compose
 DEV     := $(COMPOSE) run --rm dev
 
 POSTGRES_USER ?= heartbeat_user
 POSTGRES_DB   ?= heartbeat
+KAFKA_CONSUMER_GROUP_ID ?= heartbeat-consumer-group
 
 help:
 	@echo Everything runs in Docker. No host Python required.
@@ -27,6 +28,11 @@ help:
 	@echo   make consumer    Follow consumer logs
 	@echo   make psql        Open a psql shell
 	@echo   make shell       Open a shell in the dev image
+	@echo   ---- load ----
+	@echo   make load-up RATE=1000 CONSUMERS=3   Scale up under load
+	@echo   make lag         Show Kafka consumer group lag and assignment
+	@echo   make throughput  Sample throughput and lag from Prometheus
+	@echo   make load-down   Tear down the load overlay
 	@echo   ---- reset ----
 	@echo   make clean       Stop the stack and delete all volumes
 
@@ -103,6 +109,31 @@ psql:
 
 shell:
 	$(DEV) bash
+
+
+LOAD := $(COMPOSE) -f docker-compose.yml -f docker-compose.load.yml
+
+RATE      ?= 100
+CONSUMERS ?= 2
+
+# Target-specific export: the inline "VAR=x cmd" prefix is not portable
+# to cmd.exe, which make uses on Windows.
+load-up: export RATE := $(RATE)
+load-up: export CONSUMERS := $(CONSUMERS)
+load-up:
+	$(LOAD) up -d --build
+
+load-down:
+	$(LOAD) down --remove-orphans
+
+lag:
+	$(COMPOSE) exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:29092 --describe --group $(KAFKA_CONSUMER_GROUP_ID)
+
+SAMPLE ?= 0
+
+throughput: export SAMPLE := $(SAMPLE)
+throughput:
+	$(DEV) python scripts/measure.py
 
 
 clean:

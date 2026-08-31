@@ -27,7 +27,6 @@ from kafka.errors import UnknownTopicOrPartitionError
 
 from consumer.config import ConsumerConfig
 from consumer.consumer import HeartRateConsumer
-from consumer.repository import load_open_windows
 
 DATABASE_DIR = Path(__file__).resolve().parents[2] / "database"
 
@@ -209,17 +208,10 @@ def build_consumer(base_config, topics, test_schema):
         subject = HeartRateConsumer(config)
 
         # Redirect every write away from the live pipeline's tables.
+        # Window state is loaded lazily, at event time, so this takes
+        # effect before anything is read or written.
         subject.connection.execute(
             f"SET search_path TO {test_schema}"
-        )
-
-        # __init__ rehydrated against the default search_path, i.e. the
-        # live pipeline's windows. Discard those and reload from the
-        # test schema instead.
-        subject.aggregator.windows.clear()
-
-        subject.aggregator.rehydrate(
-            load_open_windows(subject.connection)
         )
 
         created.append(subject)

@@ -1,0 +1,69 @@
+# Load and consumer-group experiments.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.load.yml up -d
+#
+# RATE      events/sec the simulator emits
+# CONSUMERS additional consumer workers joining the same group
+#
+# The base `consumer` service pins a container_name and publishes a
+# fixed host port, so it cannot be scaled. Extra workers therefore run
+# as their own service with neither, sharing the same group_id so Kafka
+# rebalances partitions across all of them.
+
+services:
+
+  prometheus:
+    volumes:
+      - ./config/prometheus.load.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  producer:
+    environment:
+      SIMULATOR_EVENTS_PER_SECOND: ${RATE:-100}
+      SIMULATOR_CUSTOMER_COUNT: ${SIMULATOR_CUSTOMER_COUNT:-100}
+      SIMULATOR_OUT_OF_ORDER_PROBABILITY: ${SIMULATOR_OUT_OF_ORDER_PROBABILITY:-0.05}
+      # Batch harder at high rates; per-message waits cap throughput.
+      KAFKA_LINGER_MS: ${KAFKA_LINGER_MS:-50}
+      # Per-message ack waits cap throughput at ~1/linger_ms.
+      KAFKA_SYNC_SEND: ${KAFKA_SYNC_SEND:-false}
+
+  consumer-worker:
+    build:
+      context: .
+      target: runtime
+    image: heartbeat-app:latest
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+    command: ["python", "-m", "consumer.consumer"]
+
+    deploy:
+      replicas: ${CONSUMERS:-2}
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_HEART_RATE_TOPIC: ${KAFKA_HEART_RATE_TOPIC:-heart-rate-events}
+      KAFKA_HEART_RATE_DLQ_TOPIC: ${KAFKA_HEART_RATE_DLQ_TOPIC:-heart-rate-events-dlq}
+      # Same group as the base consumer, so partitions are shared.
+      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-heartbeat-consumer-group}
+      KAFKA_AUTO_OFFSET_RESET: ${KAFKA_AUTO_OFFSET_RESET:-earliest}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-heartbeat}
+      POSTGRES_USER: ${POSTGRES_USER:-heartbeat_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-heartbeat_password}
+      MAX_RETRY_ATTEMPTS: ${MAX_RETRY_ATTEMPTS:-4}
+      ALLOWED_OUT_OF_ORDERNESS_SECONDS: ${ALLOWED_OUT_OF_ORDERNESS_SECONDS:-300}
+      ALLOWED_LATENESS_SECONDS: ${ALLOWED_LATENESS_SECONDS:-3600}
+      WINDOW_FLUSH_INTERVAL_SECONDS: ${WINDOW_FLUSH_INTERVAL_SECONDS:-30}
+      KAFKA_POLL_TIMEOUT_MS: ${KAFKA_POLL_TIMEOUT_MS:-1000}
+      METRICS_PORT: 8000
+
+    networks:
+      - heartbeat_network

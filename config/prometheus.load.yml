@@ -1,0 +1,21 @@
+# Used with docker-compose.load.yml, where scaled workers run as the
+# consumer-worker service alongside the base consumer.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+
+  - job_name: heartbeat-consumer
+    dns_sd_configs:
+      - names:
+          - consumer
+          - consumer-worker
+        type: A
+        port: 8000
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

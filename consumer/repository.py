@@ -96,17 +96,17 @@ def insert_event(
     return inserted
 
 
-LOAD_OPEN_WINDOWS_SQL = """
+LOAD_WINDOW_SQL = """
 SELECT
-    customer_id,
-    window_start,
     event_count,
     average_heart_rate,
     minimum_heart_rate,
     maximum_heart_rate,
-    abnormal_count
+    abnormal_count,
+    is_finalized
 FROM heart_rate_daily
-WHERE is_finalized = FALSE;
+WHERE customer_id = %(customer_id)s
+  AND window_start = %(window_start)s;
 """
 
 
@@ -143,25 +143,41 @@ def upsert_daily_aggregate(
     connection.commit()
 
 
-def load_open_windows(connection: Connection) -> list[dict]:
+def load_window(
+    connection: Connection,
+    customer_id: str,
+    window_start: datetime,
+) -> dict | None:
     """
-    Every window not yet finalized.
+    One window's persisted state, or None if it was never written.
 
-    Offsets are committed as events are processed, so a restarted
-    consumer never re-reads them. Without reloading these the in-memory
-    state would restart empty and the next snapshot would overwrite a
-    good aggregate with a partial one.
+    Loaded lazily, on first event for that window, rather than eagerly
+    at startup. Offsets commit as events are processed, so a restarted
+    consumer never re-reads them and would otherwise resume from zero
+    and overwrite a good aggregate with a partial one.
+
+    Loading per key rather than in bulk matters once the consumer is
+    scaled: a worker must only own windows for the partitions it was
+    assigned, otherwise workers overwrite each other's aggregates.
     """
 
     with connection.cursor() as cursor:
-        cursor.execute(LOAD_OPEN_WINDOWS_SQL)
+        cursor.execute(
+            LOAD_WINDOW_SQL,
+            {
+                "customer_id": customer_id,
+                "window_start": window_start,
+            },
+        )
+
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
 
         columns = [
             description[0]
             for description in cursor.description
         ]
 
-        return [
-            dict(zip(columns, row, strict=True))
-            for row in cursor.fetchall()
-        ]
+        return dict(zip(columns, row, strict=True))

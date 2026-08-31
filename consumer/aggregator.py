@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -55,9 +56,16 @@ class DailyAggregator:
         self,
         allowed_out_of_orderness: timedelta,
         allowed_lateness: timedelta,
+        window_loader: Callable[
+            [str, datetime], dict | None
+        ] | None = None,
     ) -> None:
 
         self.allowed_lateness = allowed_lateness
+
+        # Consulted on first event for a window, so state survives a
+        # restart. See repository.load_window for why this is lazy.
+        self.window_loader = window_loader
 
         self.watermark_tracker = WatermarkTracker(
             allowed_out_of_orderness=allowed_out_of_orderness,
@@ -73,32 +81,43 @@ class DailyAggregator:
     def watermark(self) -> datetime | None:
         return self.watermark_tracker.watermark
 
-    def rehydrate(self, rows: list[dict]) -> int:
+    def _restore(
+        self,
+        key: tuple[str, datetime],
+    ) -> WindowState | None:
         """
-        Restore previously persisted open windows into memory.
+        Seed a window from persisted state.
 
-        Called at startup so a restarted consumer continues accumulating
-        instead of starting from zero. The watermark is deliberately not
-        seeded from these rows: it is derived from event time actually
+        Returns None when the window was already finalized, meaning it
+        must not be reopened. The watermark is deliberately not seeded
+        from persisted rows: it is derived from event time actually
         observed, and a stale watermark would misclassify lateness.
         """
 
-        for row in rows:
-            key = (row["customer_id"], row["window_start"])
+        if self.window_loader is None:
+            return WindowState()
 
-            count = row["event_count"]
+        row = self.window_loader(*key)
 
-            self.windows[key] = WindowState(
-                count=count,
-                heart_rate_sum=round(
-                    row["average_heart_rate"] * count
-                ),
-                minimum=row["minimum_heart_rate"],
-                maximum=row["maximum_heart_rate"],
-                abnormal_count=row["abnormal_count"],
-            )
+        if row is None:
+            return WindowState()
 
-        return len(rows)
+        if row["is_finalized"]:
+            self.finalized.add(key)
+
+            return None
+
+        count = row["event_count"]
+
+        return WindowState(
+            count=count,
+            heart_rate_sum=round(
+                row["average_heart_rate"] * count
+            ),
+            minimum=row["minimum_heart_rate"],
+            maximum=row["maximum_heart_rate"],
+            abnormal_count=row["abnormal_count"],
+        )
 
     def add_event(
         self,
@@ -136,7 +155,20 @@ class DailyAggregator:
                 aggregated=False,
             )
 
-        state = self.windows.setdefault(key, WindowState())
+        state = self.windows.get(key)
+
+        if state is None:
+            state = self._restore(key)
+
+            if state is None:
+                # Finalized in a previous run of this consumer.
+                return EventOutcome(
+                    is_late=late,
+                    lateness_seconds=lateness,
+                    aggregated=False,
+                )
+
+            self.windows[key] = state
 
         state.add(
             heart_rate=heart_rate,

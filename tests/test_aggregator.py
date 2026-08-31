@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from consumer.aggregator import DailyAggregator
 
 
@@ -143,75 +145,100 @@ def test_aggregates_are_per_customer():
     assert by_customer["customer-0002"].abnormal_count == 1
 
 
-def test_rehydrate_restores_open_window_totals():
-    subject = aggregator()
+def loader_for(row: dict | None):
+    """Stand in for repository.load_window."""
 
-    restored = subject.rehydrate(
-        [
-            {
-                "customer_id": "customer-0001",
-                "window_start": at(30, 0, 0),
-                "event_count": 4,
-                "average_heart_rate": 75.0,
-                "minimum_heart_rate": 60,
-                "maximum_heart_rate": 90,
-                "abnormal_count": 1,
-            }
-        ]
+    return lambda customer_id, window_start: row
+
+
+def persisted(
+    count=2,
+    average=70.0,
+    minimum=70,
+    maximum=70,
+    abnormal=0,
+    finalized=False,
+) -> dict:
+    return {
+        "event_count": count,
+        "average_heart_rate": average,
+        "minimum_heart_rate": minimum,
+        "maximum_heart_rate": maximum,
+        "abnormal_count": abnormal,
+        "is_finalized": finalized,
+    }
+
+
+def test_window_loaded_lazily_on_first_event():
+    subject = DailyAggregator(
+        allowed_out_of_orderness=timedelta(minutes=5),
+        allowed_lateness=timedelta(hours=1),
+        window_loader=loader_for(
+            persisted(count=4, average=75.0, minimum=60, maximum=90)
+        ),
     )
 
-    assert restored == 1
-
-    snapshot = subject.snapshot_open_windows()[0]
-
-    assert snapshot.event_count == 4
-    assert snapshot.average_heart_rate == 75.0
-    assert snapshot.abnormal_count == 1
-
-
-def test_rehydrated_window_keeps_accumulating():
-    # The restart case: totals must continue from what was persisted,
-    # not restart at zero and overwrite a good aggregate.
-    subject = aggregator()
-
-    subject.rehydrate(
-        [
-            {
-                "customer_id": "customer-0001",
-                "window_start": at(30, 0, 0),
-                "event_count": 2,
-                "average_heart_rate": 70.0,
-                "minimum_heart_rate": 70,
-                "maximum_heart_rate": 70,
-                "abnormal_count": 0,
-            }
-        ]
-    )
+    # Nothing loaded until an event arrives for the window.
+    assert subject.snapshot_open_windows() == []
 
     add(subject, day=30, hour=12, heart_rate=100)
 
     snapshot = subject.snapshot_open_windows()[0]
 
-    assert snapshot.event_count == 3
-    assert snapshot.average_heart_rate == 80.0
+    assert snapshot.event_count == 5
     assert snapshot.maximum_heart_rate == 100
+    assert snapshot.average_heart_rate == pytest.approx(80.0)
 
 
-def test_rehydrate_does_not_seed_watermark():
-    subject = aggregator()
-
-    subject.rehydrate(
-        [
-            {
-                "customer_id": "customer-0001",
-                "window_start": at(30, 0, 0),
-                "event_count": 1,
-                "average_heart_rate": 70.0,
-                "minimum_heart_rate": 70,
-                "maximum_heart_rate": 70,
-                "abnormal_count": 0,
-            }
-        ]
+def test_missing_persisted_window_starts_empty():
+    subject = DailyAggregator(
+        allowed_out_of_orderness=timedelta(minutes=5),
+        allowed_lateness=timedelta(hours=1),
+        window_loader=loader_for(None),
     )
 
-    assert subject.watermark is None
+    add(subject, day=30, heart_rate=90)
+
+    assert subject.snapshot_open_windows()[0].event_count == 1
+
+
+def test_window_finalized_in_a_previous_run_is_not_reopened():
+    # Without consulting is_finalized from storage, a restarted
+    # consumer would happily reopen a closed window.
+    subject = DailyAggregator(
+        allowed_out_of_orderness=timedelta(minutes=5),
+        allowed_lateness=timedelta(hours=1),
+        window_loader=loader_for(persisted(finalized=True)),
+    )
+
+    outcome = add(subject, day=30, heart_rate=200)
+
+    assert outcome.aggregated is False
+    assert subject.snapshot_open_windows() == []
+
+
+def test_loader_consulted_once_per_window():
+    calls = []
+
+    def counting_loader(customer_id, window_start):
+        calls.append((customer_id, window_start))
+
+
+    subject = DailyAggregator(
+        allowed_out_of_orderness=timedelta(minutes=5),
+        allowed_lateness=timedelta(hours=1),
+        window_loader=counting_loader,
+    )
+
+    for hour in (10, 11, 12):
+        add(subject, day=30, hour=hour)
+
+    assert len(calls) == 1
+
+
+def test_no_loader_still_works():
+    subject = aggregator()
+
+    add(subject, day=30, heart_rate=65)
+
+    assert subject.snapshot_open_windows()[0].event_count == 1

@@ -53,3 +53,19 @@ class KafkaProducerConfig:
         "KAFKA_COMPRESSION_TYPE",
         "gzip",
     )
+
+    # Waiting for each message's acknowledgement costs a round trip per
+    # event, which caps throughput at roughly 1/linger_ms. Keep it on
+    # for demos and per-event logging; turn it off for load tests.
+    sync_send: bool = os.getenv(
+        "KAFKA_SYNC_SEND",
+        "true",
+    ).lower() == "true"
+
+    # Async mode logs a running total instead of every event.
+    log_every: int = int(
+        os.getenv(
+            "KAFKA_PRODUCER_LOG_EVERY",
+            "1000",
+        )
+    )

@@ -20,6 +20,10 @@ class HeartRateProducer:
 
         self.config = config
 
+        self.sent = 0
+
+        self.failed = 0
+
         self.producer = KafkaProducer(
             bootstrap_servers=config.bootstrap_servers,
 
@@ -45,7 +49,8 @@ class HeartRateProducer:
         """
         Send a single heart-rate event to Kafka.
 
-        customer_id is used as the Kafka key.
+        customer_id is used as the Kafka key, so a customer's events
+        always land on the same partition and stay ordered.
         """
 
         customer_id = event["customer_id"]
@@ -56,9 +61,21 @@ class HeartRateProducer:
             value=event,
         )
 
-        # For now, wait for Kafka's response.
-        # Later, we'll explore asynchronous delivery
-        # when performing high-throughput experiments.
+        self.sent += 1
+
+        if not self.config.sync_send:
+            # Delivery failures surface through the callback rather than
+            # a blocking wait, which is what makes high rates reachable.
+            future.add_errback(self._on_delivery_error)
+
+            if self.sent % self.config.log_every == 0:
+                logger.info(
+                    "Sent %d events (async)",
+                    self.sent,
+                )
+
+            return
+
         metadata = future.get(timeout=10)
 
         logger.info(
@@ -69,6 +86,15 @@ class HeartRateProducer:
             metadata.topic,
             metadata.partition,
             metadata.offset,
+        )
+
+    def _on_delivery_error(self, exception: Exception) -> None:
+        self.failed += 1
+
+        logger.error(
+            "Delivery failed (%d total): %s",
+            self.failed,
+            exception,
         )
 
     def flush(self) -> None:
