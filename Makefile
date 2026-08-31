@@ -53,7 +53,7 @@ help:
 	@echo make build - build the application images
 	@echo make lint - run Ruff
 	@echo make lint-fix - run Ruff with --fix
-	@echo make test - run the 83 unit tests
+	@echo make test - run the 92 unit tests
 	@echo make simulator - preview raw events, no Kafka involved
 	@echo == 2. START THE STACK ==
 	@echo make up - start everything

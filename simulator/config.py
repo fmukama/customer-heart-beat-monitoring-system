@@ -85,5 +85,48 @@ class SimulatorConfig:
         )
     )
 
+    # A device that was offline for days and has just synced. Backdated
+    # far enough to be dramatically late rather than merely jittered.
+    extreme_late_probability: float = float(
+        os.getenv(
+            "SIMULATOR_EXTREME_LATE_PROBABILITY",
+            "0.005",
+        )
+    )
+
+    extreme_backdate_seconds: float = float(
+        os.getenv(
+            "SIMULATOR_EXTREME_BACKDATE_SECONDS",
+            "172800",
+        )
+    )
+
+    # A buggy device emitting a malformed payload. Drives the DLQ
+    # without anyone injecting by hand.
+    invalid_probability: float = float(
+        os.getenv(
+            "SIMULATOR_INVALID_PROBABILITY",
+            "0.004",
+        )
+    )
+
+    # A malfunctioning sensor reporting a physiologically impossible
+    # value, which violates the schema range rather than the structure.
+    out_of_range_probability: float = float(
+        os.getenv(
+            "SIMULATOR_OUT_OF_RANGE_PROBABILITY",
+            "0.004",
+        )
+    )
+
+    # A device retrying a send it already made, so the same event_id
+    # arrives twice. Exercises the idempotent insert continuously.
+    duplicate_probability: float = float(
+        os.getenv(
+            "SIMULATOR_DUPLICATE_PROBABILITY",
+            "0.01",
+        )
+    )
+
     # Seed the RNG for reproducible runs. Unset means random.
     seed: int | None = _optional_int("SIMULATOR_SEED")

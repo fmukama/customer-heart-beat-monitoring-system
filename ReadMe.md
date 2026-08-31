@@ -103,8 +103,27 @@ Unknown fields are rejected.
 
 ## Testing the pipeline in every corner
 
-`make inject WHAT=<case>` publishes one crafted event. Give the consumer
-a few seconds, then inspect.
+**The simulator produces every fault continuously — you do not have to
+inject anything to get evidence.** Each rate is independently tunable in
+[.env.example](.env.example); set them all to `0` for a clean stream.
+
+| Fault | Default rate | Models |
+| --- | --- | --- |
+| Abnormal reading | 5% | Valid event outside 60–100 bpm |
+| Out of order | 5% | `event_time` backdated up to 10 min |
+| Extreme late | 0.5% | Device offline for ~2 days, then synced |
+| Out of range | 0.4% | Malfunctioning sensor, violates the schema |
+| Invalid payload | 0.4% | Buggy device: bad UUID, missing field, wrong type |
+| Duplicate | 1% | Device retrying a send it already made |
+
+After a couple of minutes on a fresh stack, `make show-late` and
+`make show-dlq` both have real data in them. Measured over ~8,000
+events: 319 abnormal, 179 late, 34 extreme-late (worst 47 hours), 43
+dead-lettered, and 91 duplicates absorbed with zero duplicate rows.
+
+`make inject WHAT=<case>` remains, for **deterministic** demonstration —
+firing one specific case on command rather than waiting for probability.
+Give the consumer a few seconds, then inspect.
 
 ```bash
 make inject WHAT=normal        # valid    → stored NORMAL
@@ -116,6 +135,19 @@ make inject WHAT=duplicate     # same id twice → exactly one row
 make inject WHAT=future        # +3d      → advances watermark, closes windows
 make inject WHAT=toolate       # -2d      → raw kept, finalized window untouched
 ```
+
+Two of these are **deliberately not automated**:
+
+- **`future`** is not sensor behaviour. It is a tool for jumping the
+  watermark so windows finalize inside a demo instead of after a real
+  day. Making it probabilistic would repeatedly finalize open windows
+  early and push every later event past the grace period — it would
+  corrupt the aggregates rather than exercise them.
+- **`toolate` as Scenario G** needs a window that is *already*
+  finalized. The simulator's extreme-late events produce huge lateness,
+  but if their window was never opened the aggregator simply opens it,
+  so `aggregated=false` cannot be produced reliably by chance. The
+  `future` → `toolate` sequence is what demonstrates it.
 
 Inspect the result:
 
@@ -215,7 +247,7 @@ parallelism. Measured numbers: **[docs/performance.md](docs/performance.md)**.
 ### Automated tests
 
 ```bash
-make test               # 83 unit tests, no stack needed
+make test               # 92 unit tests, no stack needed
 make test-integration   # 27 integration tests, needs `make up`
 make test-all
 make lint
@@ -299,12 +331,14 @@ A dead consumer is not.
 | `PostgresUnavailable` | Notifier cannot reach PostgreSQL | 1m | CRITICAL |
 | `KafkaLagHigh` | Consumer group lag > 10,000 | 5m | WARNING |
 | `ProcessingLatencyHigh` | p95 processing > 500ms | 5m | WARNING |
-| `DLQRateHigh` | > 0.1 events/sec dead-lettered | 5m | WARNING |
+| `DLQRateHigh` | > 5% of events dead-lettered | 5m | WARNING |
 | `WatermarkStuck` | Watermark lag > 900s | 10m | WARNING |
 
 Thresholds are set against measured baselines from
 [docs/performance.md](docs/performance.md), not guessed — p95 is normally
-~25ms, watermark lag sits at ~300s, and the DLQ baseline is zero.
+~25ms, watermark lag sits at ~300s, and the DLQ baseline is ~0.8% of
+traffic. DLQRateHigh is a proportion rather than an absolute rate, so
+it does not false-fire simply because throughput rose.
 
 Every alert is recorded in PostgreSQL with a firing/resolved lifecycle,
 so the system can answer *"show me every notification in the last 30

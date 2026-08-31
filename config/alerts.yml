@@ -77,19 +77,29 @@ groups:
     interval: 15s
     rules:
 
-      # The simulator emits no invalid events, so the baseline is zero.
+      # A proportion, not an absolute rate. The simulator emits a small
+      # steady fraction of malformed events by design, so an absolute
+      # threshold would false-fire purely because throughput rose.
+      # Baseline is ~0.8% dead-lettered, so 5% is roughly 6x headroom.
       - alert: DLQRateHigh
-        expr: sum(rate(consumer_dlq_messages_total[5m])) > 0.1
+        expr: >-
+          sum(rate(consumer_dlq_messages_total[5m]))
+          /
+          clamp_min(
+            sum(rate(consumer_messages_processed_total[5m]))
+            + sum(rate(consumer_dlq_messages_total[5m])),
+            0.001
+          ) > 0.05
         for: 5m
         labels:
           severity: WARNING
           component: consumer
         annotations:
-          summary: Events are being dead-lettered
+          summary: Unusual proportion of events being dead-lettered
           description: >-
-            More than 0.1 events/sec are failing validation and going
-            to the dead letter topic. Likely an upstream schema change
-            or a malfunctioning sensor.
+            More than 5% of incoming events are failing validation,
+            against a normal baseline near 0.8%. Likely an upstream
+            schema change or a batch of malfunctioning sensors.
 
       # Healthy lag sits at ALLOWED_OUT_OF_ORDERNESS_SECONDS (300s).
       # A stuck watermark makes now-minus-watermark grow without bound,
