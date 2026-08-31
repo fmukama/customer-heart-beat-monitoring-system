@@ -1,4 +1,4 @@
-.PHONY: help build lint lint-fix test test-unit test-integration test-all up down restart logs ps topics simulator producer consumer psql shell clean load-up load-down lag throughput urls adminer grafana prometheus metrics inject show-raw show-daily show-late show-dlq reconcile diagrams
+.PHONY: help build lint lint-fix test test-unit test-integration test-all up down restart logs ps topics simulator producer consumer psql shell clean load-up load-down lag throughput urls adminer grafana prometheus metrics inject show-raw show-daily show-late show-dlq reconcile diagrams alerts show-notifications alert-demo
 
 COMPOSE := docker compose
 DEV     := $(COMPOSE) run --rm dev
@@ -8,6 +8,8 @@ POSTGRES_PASSWORD ?= heartbeat_password
 POSTGRES_DB   ?= heartbeat
 POSTGRES_PORT ?= 5432
 ADMINER_PORT ?= 8080
+ALERTMANAGER_PORT ?= 9093
+NOTIFIER_PORT ?= 9091
 GRAFANA_PORT ?= 3000
 GRAFANA_ADMIN_USER ?= admin
 GRAFANA_ADMIN_PASSWORD ?= admin_password
@@ -52,6 +54,10 @@ help:
 	@echo   make show-late   Late event summary
 	@echo   make show-dlq    Read the dead letter topic
 	@echo   make reconcile   Check aggregates match raw counts
+	@echo   ---- alerting ----
+	@echo   make alerts      Show alert rules and their state
+	@echo   make show-notifications  Alert history from PostgreSQL
+	@echo   make alert-demo  Stop the consumer and watch ConsumerDown fire
 	@echo   ---- load ----
 	@echo   make load-up RATE=1000 CONSUMERS=3   Scale up under load
 	@echo   make lag         Show Kafka consumer group lag and assignment
@@ -142,6 +148,8 @@ urls:
 	@echo   Adminer     http://localhost:$(ADMINER_PORT)    server=postgres db=$(POSTGRES_DB) user=$(POSTGRES_USER) pass=$(POSTGRES_PASSWORD)
 	@echo   Grafana     http://localhost:$(GRAFANA_PORT)    user=$(GRAFANA_ADMIN_USER) pass=$(GRAFANA_ADMIN_PASSWORD)
 	@echo   Prometheus  http://localhost:$(PROMETHEUS_PORT)
+	@echo   Alertmanager http://localhost:$(ALERTMANAGER_PORT)
+	@echo   Notifier    http://localhost:$(NOTIFIER_PORT)/health
 	@echo   Metrics     http://localhost:$(METRICS_PORT)/metrics
 	@echo   PostgreSQL  localhost:$(POSTGRES_PORT)
 
@@ -173,9 +181,30 @@ show-dlq:
 	$(COMPOSE) exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:29092 --topic $(KAFKA_HEART_RATE_DLQ_TOPIC) --from-beginning --max-messages $(N) --timeout-ms 15000
 
 
-# Only open windows can reconcile with raw counts. A finalized window is
-# immutable, so events arriving afterwards are stored raw and deliberately
-# left out of the aggregate.
+alerts:
+	$(DEV) python -c "import json,urllib.request as u; d=json.load(u.urlopen('http://prometheus:9090/api/v1/rules')); rs=[r for g in d['data']['groups'] for r in g['rules']]; print('%-24s %-9s %s' % ('ALERT','STATE','SEVERITY')); [print('%-24s %-9s %s' % (r['name'], r.get('state','-'), r['labels'].get('severity','-'))) for r in rs]"
+
+
+show-notifications:
+	$(PSQL) -c "SELECT notification_id, alert_type, severity, status, created_at, resolved_at FROM notifications ORDER BY created_at DESC LIMIT 20;"
+
+
+# ConsumerDown has for:1m and Alertmanager adds group_wait, so this
+# deliberately waits rather than polling tightly.
+alert-demo:
+	@echo Stopping the consumer...
+	$(COMPOSE) stop consumer
+	@echo Waiting 150s for ConsumerDown to fire and reach the notifier...
+	$(DEV) python -c "import time; time.sleep(150)"
+	$(MAKE) alerts
+	$(MAKE) show-notifications
+	@echo Restarting the consumer...
+	$(COMPOSE) start consumer
+	@echo Waiting 150s for the alert to resolve...
+	$(DEV) python -c "import time; time.sleep(150)"
+	$(MAKE) show-notifications
+
+
 reconcile:
 	$(PSQL) -c "SELECT d.customer_id, d.window_start::date AS window, d.event_count AS aggregated, r.raw, d.event_count = r.raw AS reconciles FROM heart_rate_daily d JOIN (SELECT customer_id, date_trunc('day', event_time) AS w, count(*) AS raw FROM heart_rate_events GROUP BY 1,2) r ON r.customer_id = d.customer_id AND r.w = d.window_start WHERE NOT d.is_finalized ORDER BY 1 LIMIT 10;"
 	$(PSQL) -c "SELECT count(*) AS open_windows, count(*) FILTER (WHERE ok) AS reconciling FROM (SELECT d.event_count = r.raw AS ok FROM heart_rate_daily d JOIN (SELECT customer_id, date_trunc('day', event_time) AS w, count(*) AS raw FROM heart_rate_events GROUP BY 1,2) r ON r.customer_id = d.customer_id AND r.w = d.window_start WHERE NOT d.is_finalized) s;"

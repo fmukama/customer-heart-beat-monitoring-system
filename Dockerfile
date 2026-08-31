@@ -10,6 +10,7 @@ COPY schemas/ ./schemas/
 COPY simulator/ ./simulator/
 COPY producer/ ./producer/
 COPY consumer/ ./consumer/
+COPY notifier/ ./notifier/
 
 
 # Dev tooling: ruff and pytest. Source is bind-mounted at run time.

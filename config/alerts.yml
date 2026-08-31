@@ -1,0 +1,108 @@
+# Operational failure alerts.
+#
+# Deliberately NOT clinical anomalies: an abnormal heart rate is valid
+# business data, already stored and tagged. These fire when the pipeline
+# itself is unhealthy.
+#
+# Thresholds are set against measured baselines from the load testing in
+# docs/performance.md, not guessed.
+
+groups:
+
+  - name: heartbeat-availability
+    interval: 15s
+    rules:
+
+      # The absent() clause matters: Prometheus discovers consumers by
+      # DNS, so a removed container makes the target disappear entirely
+      # and "up == 0" alone would never fire.
+      - alert: ConsumerDown
+        expr: up{job="heartbeat-consumer"} == 0 or absent(up{job="heartbeat-consumer"})
+        for: 1m
+        labels:
+          severity: CRITICAL
+          component: consumer
+        annotations:
+          summary: Heartbeat consumer is down
+          description: >-
+            No healthy heartbeat-consumer instance for over a minute.
+            Events are accumulating in Kafka and nothing is being
+            written to PostgreSQL.
+
+      - alert: PostgresUnavailable
+        expr: heartbeat_postgres_up == 0
+        for: 1m
+        labels:
+          severity: CRITICAL
+          component: postgres
+        annotations:
+          summary: PostgreSQL is unreachable
+          description: >-
+            The notifier has been unable to reach PostgreSQL for over a
+            minute. Raw events and aggregates cannot be persisted.
+
+
+  - name: heartbeat-throughput
+    interval: 15s
+    rules:
+
+      # Normal lag is ~0. The 1000 events/sec load test reached ~98,000.
+      - alert: KafkaLagHigh
+        expr: sum(consumer_partition_lag) > 10000
+        for: 5m
+        labels:
+          severity: WARNING
+          component: consumer
+        annotations:
+          summary: Kafka consumer lag is high
+          description: >-
+            Consumer group lag has exceeded 10000 messages for 5
+            minutes. The consumer is not keeping up with the producer.
+
+      # Measured p95 is ~25ms, so this is 20x headroom.
+      - alert: ProcessingLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(consumer_processing_seconds_bucket[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: WARNING
+          component: consumer
+        annotations:
+          summary: Event processing latency is high
+          description: >-
+            p95 processing time has exceeded 500ms for 5 minutes,
+            against a normal baseline of roughly 25ms.
+
+
+  - name: heartbeat-correctness
+    interval: 15s
+    rules:
+
+      # The simulator emits no invalid events, so the baseline is zero.
+      - alert: DLQRateHigh
+        expr: sum(rate(consumer_dlq_messages_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: WARNING
+          component: consumer
+        annotations:
+          summary: Events are being dead-lettered
+          description: >-
+            More than 0.1 events/sec are failing validation and going
+            to the dead letter topic. Likely an upstream schema change
+            or a malfunctioning sensor.
+
+      # Healthy lag sits at ALLOWED_OUT_OF_ORDERNESS_SECONDS (300s).
+      # A stuck watermark makes now-minus-watermark grow without bound,
+      # so 3x normal is an unambiguous signal.
+      - alert: WatermarkStuck
+        expr: max(consumer_watermark_lag_seconds) > 900
+        for: 10m
+        labels:
+          severity: WARNING
+          component: consumer
+        annotations:
+          summary: Event-time watermark is not advancing
+          description: >-
+            The watermark has trailed wall clock by more than 900s for
+            10 minutes, against a healthy 300s. Windows will not
+            finalize while this persists.

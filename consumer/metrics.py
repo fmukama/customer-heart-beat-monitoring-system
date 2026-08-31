@@ -63,6 +63,16 @@ windows_open = Gauge(
     "Windows currently held in memory.",
 )
 
+# Unconsumed messages per assigned partition. Drives the KafkaLagHigh
+# alert. Self-reported rather than taken from a broker exporter: if this
+# consumer dies the series goes absent, but ConsumerDown covers that
+# case, so nothing is missed.
+partition_lag = Gauge(
+    "consumer_partition_lag",
+    "Messages behind the log end offset, per assigned partition.",
+    ["topic", "partition"],
+)
+
 windows_finalized = Counter(
     "consumer_windows_finalized_total",
     "Windows closed and persisted.",

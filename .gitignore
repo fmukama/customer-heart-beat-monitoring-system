@@ -44,3 +44,5 @@ docker-compose.override.yml
 
 # Local data
 data/
+# Personal presentation notes
+docs/present.md

@@ -1,0 +1,70 @@
+global:
+  # How long before a firing alert with no further updates is treated
+  # as resolved. Must exceed the Prometheus evaluation interval.
+  resolve_timeout: 2m
+
+route:
+  receiver: notifier
+
+  # Group by alert name and component so one incident is one
+  # notification rather than one per instance.
+  group_by: [alertname, component]
+
+  # Brief pause to collect related alerts before the first send.
+  group_wait: 10s
+
+  # Wait before sending an update about an already-notified group.
+  group_interval: 1m
+
+  # Re-send a still-firing alert this often.
+  repeat_interval: 1h
+
+  routes:
+    # Critical alerts skip most of the batching delay.
+    - matchers:
+        - severity = CRITICAL
+      receiver: notifier
+      group_wait: 5s
+      repeat_interval: 30m
+
+receivers:
+
+  # The channel of record: every alert is written to the notifications
+  # table in PostgreSQL, giving queryable 30-day history.
+  - name: notifier
+    webhook_configs:
+      - url: http://notifier:9091/alerts
+        # Alertmanager retries on failure, which together with the
+        # notifier's in-memory buffer is what covers a PostgreSQL
+        # outage.
+        send_resolved: true
+
+  # ----------------------------------------------------------------
+  # To add Slack, uncomment and put the webhook URL in your own .env
+  # as SLACK_WEBHOOK_URL. Do not commit it.
+  #
+  # - name: slack
+  #   slack_configs:
+  #     - api_url: ${SLACK_WEBHOOK_URL}
+  #       channel: '#alerts'
+  #       send_resolved: true
+  #       title: '{{ .Status | toUpper }} {{ .CommonLabels.alertname }}'
+  #       text: '{{ .CommonAnnotations.description }}'
+  #
+  # Then point the route at both:
+  #   route:
+  #     receiver: notifier
+  #     routes:
+  #       - matchers: [severity = CRITICAL]
+  #         receiver: slack
+  #         continue: true      # keep going so notifier also records it
+  # ----------------------------------------------------------------
+
+inhibit_rules:
+  # A dead consumer explains its own lag and latency, so suppress the
+  # downstream noise and alert once on the cause.
+  - source_matchers:
+      - alertname = ConsumerDown
+    target_matchers:
+      - component = consumer
+    equal: [component]

@@ -30,6 +30,10 @@ make diagrams
 | `consumer/repository.py` | All SQL, idempotency, upserts | Business rules |
 | `consumer/dlq.py` | Publishing failures with diagnostic context | Deciding what is a failure |
 | `consumer/retry.py` | Bounded exponential backoff with jitter | Classifying errors |
+| `notifier/payload.py` | Turning Alertmanager webhooks into records | Persistence or transport |
+| `notifier/store.py` | Persisting alerts, buffering when PostgreSQL is unreachable | Deciding what is an alert |
+| `notifier/probe.py` | Independent PostgreSQL health signal | Anything else |
+| `notifier/server.py` | The webhook endpoint and metrics exposition | Alert semantics |
 
 The split that matters most: **abnormal is not invalid.** A 180 bpm
 reading is structurally valid and must be stored and tagged. Only
@@ -49,6 +53,36 @@ structurally broken events are dead-lettered.
 
 Nothing is acknowledged to Kafka until it has been durably handled —
 either stored or dead-lettered. That is the core delivery guarantee.
+
+## Alerting
+
+```
+Prometheus → alert rules → Alertmanager → notifier → notifications table
+```
+
+Six rules in [alerts.yml](../config/alerts.yml) cover **operational
+failure, not clinical anomaly**: `ConsumerDown`, `PostgresUnavailable`,
+`KafkaLagHigh`, `ProcessingLatencyHigh`, `DLQRateHigh`,
+`WatermarkStuck`. An abnormal heart rate is valid business data and is
+already stored and tagged; it is not an alert.
+
+The notifier is a **separate service, deliberately**. `ConsumerDown` is
+one of the alerts, so a recorder living inside the consumer would die
+alongside the very thing it is meant to report.
+
+| Failure in the alerting path | Handling |
+| --- | --- |
+| Duplicate firing webhook (Alertmanager retry) | Partial unique index on `fingerprint WHERE status = 'FIRING'` absorbs it — same idempotency reasoning as `ON CONFLICT (event_id)` |
+| Resolved webhook for an unknown alert | No-op; nothing to close |
+| PostgreSQL unreachable while recording | Logged unconditionally, buffered in memory (bounded at 1000), drained by the probe loop when PostgreSQL returns |
+| Malformed webhook body | 400, logged; Alertmanager will not retry forever |
+| Payload with no parseable alerts | 200, so Alertmanager stops retrying something undeliverable |
+
+The honest weakness: if PostgreSQL is down, the alert store is down, so
+`PostgresUnavailable` cannot be written immediately. The row appears
+once PostgreSQL returns, and `docker compose logs notifier` is the
+always-available fallback. A production system would keep the alert
+store outside the database it monitors.
 
 ## Why event time, not arrival time
 

@@ -217,6 +217,57 @@ class HeartRateConsumer:
             len(self.aggregator.windows)
         )
 
+    def observe_lag(self) -> None:
+        """
+        Report unconsumed messages per assigned partition.
+
+        Costs one broker round trip, so it is called on the flush tick
+        rather than per message.
+        """
+
+        assignment = self.consumer.assignment()
+
+        if not assignment:
+            return
+
+        try:
+            end_offsets = self.consumer.end_offsets(
+                list(assignment)
+            )
+        except Exception:
+            logger.debug(
+                "Could not fetch end offsets for lag.",
+                exc_info=True,
+            )
+
+            return
+
+        for partition in assignment:
+            try:
+                position = self.consumer.position(partition)
+            except Exception:
+                # A partition with no position yet, e.g. mid-rebalance.
+                logger.debug(
+                    "No position for %s.",
+                    partition,
+                    exc_info=True,
+                )
+
+                continue
+
+            if position is None:
+                continue
+
+            end = end_offsets.get(partition)
+
+            if end is None:
+                continue
+
+            metrics.partition_lag.labels(
+                topic=partition.topic,
+                partition=str(partition.partition),
+            ).set(max(0, end - position))
+
     def flush_windows(self, force: bool = False) -> None:
         """
         Persist finalized windows, plus a snapshot of open ones so the
@@ -232,6 +283,8 @@ class HeartRateConsumer:
             return
 
         self.last_flush = time.monotonic()
+
+        self.observe_lag()
 
         finalized = self.aggregator.finalize_ready_windows()
 

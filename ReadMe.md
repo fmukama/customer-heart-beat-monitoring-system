@@ -27,7 +27,9 @@ make urls
 | **Grafana** dashboards | http://localhost:3000 | `admin` / `admin_password` |
 | **Adminer** (PostgreSQL) | http://localhost:8080 | server `postgres`, db `heartbeat`, user `heartbeat_user`, pass `heartbeat_password` |
 | **Prometheus** | http://localhost:9090 | — |
+| **Alertmanager** | http://localhost:9093 | — |
 | Consumer metrics | http://localhost:8000/metrics | — |
+| Notifier health | http://localhost:9091/health | — |
 
 `make adminer`, `make grafana`, `make prometheus` print the URL and
 credentials for each. Grafana's dashboard (**Heartbeat Pipeline**,
@@ -44,6 +46,8 @@ Simulator → Producer → Kafka → Consumer → PostgreSQL
                        invalid ───┴──→ DLQ topic
                                   │
                        metrics ───┴──→ Prometheus → Grafana
+                                            │
+                                     Alertmanager → notifier → notifications
 ```
 
 Diagrams (PlantUML), component responsibilities, and every failure path:
@@ -211,8 +215,8 @@ parallelism. Measured numbers: **[docs/performance.md](docs/performance.md)**.
 ### Automated tests
 
 ```bash
-make test               # 65 unit tests, no stack needed
-make test-integration   # 15 integration tests, needs `make up`
+make test               # 83 unit tests, no stack needed
+make test-integration   # 27 integration tests, needs `make up`
 make test-all
 make lint
 ```
@@ -279,6 +283,61 @@ scaled.
 
 ---
 
+## Notifications
+
+```
+Prometheus → alert rules → Alertmanager → notifier → notifications table
+```
+
+Alerts cover **operational failures, not clinical anomalies**. An
+abnormal heart rate is valid business data, already stored and tagged.
+A dead consumer is not.
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `ConsumerDown` | No healthy consumer instance | 1m | CRITICAL |
+| `PostgresUnavailable` | Notifier cannot reach PostgreSQL | 1m | CRITICAL |
+| `KafkaLagHigh` | Consumer group lag > 10,000 | 5m | WARNING |
+| `ProcessingLatencyHigh` | p95 processing > 500ms | 5m | WARNING |
+| `DLQRateHigh` | > 0.1 events/sec dead-lettered | 5m | WARNING |
+| `WatermarkStuck` | Watermark lag > 900s | 10m | WARNING |
+
+Thresholds are set against measured baselines from
+[docs/performance.md](docs/performance.md), not guessed — p95 is normally
+~25ms, watermark lag sits at ~300s, and the DLQ baseline is zero.
+
+Every alert is recorded in PostgreSQL with a firing/resolved lifecycle,
+so the system can answer *"show me every notification in the last 30
+days."*
+
+```bash
+make alerts               # rules and their current state
+make show-notifications   # alert history
+make alert-demo           # stop the consumer, watch ConsumerDown fire and resolve
+```
+
+```sql
+SELECT alert_type, severity, status, created_at, resolved_at
+FROM notifications
+WHERE created_at > now() - interval '30 days'
+ORDER BY created_at DESC;
+```
+
+Alertmanager is at http://localhost:9093, the notifier at
+http://localhost:9091/health.
+
+**The notifier is a separate service on purpose.** `ConsumerDown` is one
+of the alerts, so a recorder inside the consumer would die alongside the
+thing it reports on. It also probes PostgreSQL independently, which is
+where `PostgresUnavailable` gets its signal.
+
+To add Slack or email, uncomment the receiver stub in
+[config/alertmanager/alertmanager.yml](config/alertmanager/alertmanager.yml)
+and put the webhook URL in your own `.env`. Nothing outbound is
+configured by default.
+
+---
+
 ## CI/CD
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — deliberately
@@ -325,6 +384,14 @@ the design doc's 5,000/sec target was not reached on the input side.
 **No authentication** — Kafka is `PLAINTEXT`, and PostgreSQL, Grafana and
 Adminer use development credentials. Local development only.
 
+**Alert history shares its database with the data it monitors.** If
+PostgreSQL is down, `PostgresUnavailable` cannot be written until it
+returns; the notifier buffers in memory and always logs to stdout. A
+production system would keep the alert store elsewhere.
+
+**No outbound notification channel is configured.** Alerts land in
+PostgreSQL. Slack and email are stubbed but need credentials.
+
 **Naming differs from the design document.** `draft.txt` says
 `heartbeat-events` and `heartbeat_event.json`; the implementation uses
 `heart-rate-events` and `heart_rate_event.json`. The code is internally
@@ -338,6 +405,7 @@ consistent — the design document predates it.
 simulator/   Synthetic event generation
 producer/    Kafka publishing
 consumer/    Validation, classification, event time, windowing, persistence
+notifier/    Alertmanager webhook sink, PostgreSQL health probe
 schemas/     JSON Schema — the event contract
 database/    Numbered DDL, applied automatically on first start
 config/      Prometheus scrape config, Grafana provisioning

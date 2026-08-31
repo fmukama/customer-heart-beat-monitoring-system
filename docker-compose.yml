@@ -301,6 +301,7 @@ services:
 
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
 
     command:
@@ -309,6 +310,67 @@ services:
 
     depends_on:
       - kafka
+
+    networks:
+      - heartbeat_network
+
+
+  # ============================================================
+  # Alertmanager - routes alerts to the notifier
+  # ============================================================
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: heartbeat-alertmanager
+
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+
+    volumes:
+      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+
+    depends_on:
+      - notifier
+
+    networks:
+      - heartbeat_network
+
+
+  # ============================================================
+  # Notifier - records alert history, probes PostgreSQL
+  # ============================================================
+
+  notifier:
+    build:
+      context: .
+      target: runtime
+    image: heartbeat-app:latest
+    container_name: heartbeat-notifier
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    command: ["python", "-m", "notifier"]
+
+    ports:
+      - "${NOTIFIER_PORT:-9091}:9091"
+
+    environment:
+      NOTIFIER_PORT: 9091
+      NOTIFIER_PROBE_INTERVAL_SECONDS: ${NOTIFIER_PROBE_INTERVAL_SECONDS:-15}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-heartbeat}
+      POSTGRES_USER: ${POSTGRES_USER:-heartbeat_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-heartbeat_password}
+
+    restart: on-failure
 
     networks:
       - heartbeat_network
@@ -347,6 +409,7 @@ services:
 
 volumes:
   kafka_data:
+  alertmanager_data:
   postgres_data:
   prometheus_data:
   grafana_data:
