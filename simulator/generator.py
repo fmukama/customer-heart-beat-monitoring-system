@@ -4,15 +4,15 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from .config import SimulatorConfig
 from .scenarios import (
     generate_abnormal_heart_rate,
-    generate_late_delay,
+    generate_backdate_seconds,
     generate_normal_heart_rate,
     should_be_abnormal,
-    should_be_late,
+    should_be_out_of_order,
 )
 
 
@@ -27,9 +27,14 @@ def utc_now() -> datetime:
 def generate_event(
     customer_id: str,
     config: SimulatorConfig,
+    now: datetime | None = None,
 ) -> dict:
     """
     Generate a single heart-rate event.
+
+    With probability out_of_order_probability the event_time is shifted
+    into the past, so the event arrives out of order relative to the
+    events already emitted.
     """
 
     if should_be_abnormal(config.abnormal_probability):
@@ -43,11 +48,22 @@ def generate_event(
             maximum=config.normal_max,
         )
 
+    event_time = now or utc_now()
+
+    if should_be_out_of_order(config.out_of_order_probability):
+        backdate = generate_backdate_seconds(
+            config.max_backdate_seconds
+        )
+
+        event_time = event_time - timedelta(
+            seconds=backdate
+        )
+
     return {
         "event_id": str(uuid.uuid4()),
         "customer_id": customer_id,
         "heart_rate": heart_rate,
-        "event_time": utc_now().isoformat(),
+        "event_time": event_time.isoformat(),
     }
 
 
@@ -55,7 +71,7 @@ def generate_events(
     config: SimulatorConfig,
 ) -> Iterator[dict]:
     """
-    Continuously generate heart-rate events.
+    Continuously generate heart-rate events at events_per_second.
 
     This function produces Python dictionaries.
     Kafka is deliberately not involved here.
@@ -66,19 +82,29 @@ def generate_events(
         for number in range(1, config.customer_count + 1)
     ]
 
+    interval = (
+        1.0 / config.events_per_second
+        if config.events_per_second > 0
+        else 0.0
+    )
+
+    next_emit = time.monotonic()
+
     while True:
-        for _ in range(config.batch_size):
+        yield generate_event(
+            customer_id=random.choice(customers),
+            config=config,
+        )
 
-            customer_id = random.choice(customers)
+        next_emit += interval
 
-            event = generate_event(
-                customer_id=customer_id,
-                config=config,
-            )
+        # Absolute schedule, so generation cost does not drift the rate.
+        sleep_for = next_emit - time.monotonic()
 
-            yield event
-
-        time.sleep(config.interval_seconds)
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+        else:
+            next_emit = time.monotonic()
 
 
 def main() -> None:
@@ -91,30 +117,18 @@ def main() -> None:
 
     config = SimulatorConfig()
 
+    if config.seed is not None:
+        random.seed(config.seed)
+
     print(
-        f"Starting simulator with "
-        f"{config.customer_count} customers...",
+        f"Starting simulator: {config.customer_count} customers, "
+        f"{config.events_per_second} events/sec, "
+        f"out_of_order={config.out_of_order_probability}, "
+        f"seed={config.seed}",
         file=sys.stderr,
     )
 
     for event in generate_events(config):
-
-        late = should_be_late(config.late_probability)
-
-        if late:
-            delay = generate_late_delay(
-                config.max_late_delay_seconds
-            )
-
-            print(
-                f"[SIMULATING LATE EVENT] "
-                f"delay={delay:.2f}s "
-                f"event_id={event['event_id']}",
-                file=sys.stderr,
-            )
-
-            time.sleep(delay)
-
         print(json.dumps(event), flush=True)
 
 

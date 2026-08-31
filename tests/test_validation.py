@@ -67,3 +67,89 @@ def test_invalid_event_time():
     with pytest.raises(InvalidEventError):
 
         validate_event(event)
+
+
+def test_heart_rate_below_schema_minimum():
+
+    event = valid_event()
+
+    event["heart_rate"] = 5
+
+    with pytest.raises(InvalidEventError):
+
+        validate_event(event)
+
+
+def test_heart_rate_above_schema_maximum():
+
+    event = valid_event()
+
+    event["heart_rate"] = 500
+
+    with pytest.raises(InvalidEventError):
+
+        validate_event(event)
+
+
+def test_heart_rate_at_schema_bounds_is_valid():
+
+    for heart_rate in (20, 250):
+
+        event = valid_event()
+
+        event["heart_rate"] = heart_rate
+
+        validate_event(event)
+
+
+def test_non_integer_heart_rate():
+
+    event = valid_event()
+
+    event["heart_rate"] = 75.5
+
+    with pytest.raises(InvalidEventError):
+
+        validate_event(event)
+
+
+def test_unexpected_field_is_rejected():
+
+    event = valid_event()
+
+    event["injected"] = "unexpected"
+
+    with pytest.raises(InvalidEventError):
+
+        validate_event(event)
+
+
+def test_empty_customer_id_is_rejected():
+
+    event = valid_event()
+
+    event["customer_id"] = ""
+
+    with pytest.raises(InvalidEventError):
+
+        validate_event(event)
+
+
+def test_naive_event_time_is_rejected():
+
+    event = valid_event()
+
+    event["event_time"] = "2026-08-30T10:00:00"
+
+    with pytest.raises(InvalidEventError):
+
+        validate_event(event)
+
+
+def test_zulu_event_time_is_accepted():
+
+    event = valid_event()
+
+    event["event_time"] = "2026-08-30T10:00:00Z"
+
+    validate_event(event)

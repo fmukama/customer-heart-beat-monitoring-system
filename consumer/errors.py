@@ -7,14 +7,6 @@ class PermanentEventError(Exception):
     """
 
 
-class TemporaryProcessingError(Exception):
-    """
-    A temporary infrastructure/application failure.
-
-    The event should be retried.
-    """
-
-
 class DLQPublishError(Exception):
     """
     The event could not be published to the DLQ.

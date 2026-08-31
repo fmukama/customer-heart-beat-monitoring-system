@@ -1,30 +1,54 @@
+import json
 from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from uuid import UUID
 
+import jsonschema
+
 from .errors import PermanentEventError
+
+SCHEMA_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "schemas"
+    / "heart_rate_event.json"
+)
 
 
 class InvalidEventError(PermanentEventError):
     """Raised when a heart-rate event is invalid."""
 
 
+@lru_cache(maxsize=1)
+def _validator() -> jsonschema.Draft202012Validator:
+    schema = json.loads(
+        SCHEMA_PATH.read_text(encoding="utf-8")
+    )
+
+    return jsonschema.Draft202012Validator(schema)
+
+
 def validate_event(event: dict) -> None:
     """
-    Validate the minimum requirements of a heart-rate event.
+    Validate a heart-rate event against schemas/heart_rate_event.json.
+
+    The schema is the single source of truth for structure, types and
+    ranges. Formats the schema declares but cannot enforce on its own
+    (uuid, date-time) are checked afterwards.
     """
 
-    required_fields = {
-        "event_id",
-        "customer_id",
-        "heart_rate",
-        "event_time",
-    }
+    errors = sorted(
+        _validator().iter_errors(event),
+        key=lambda error: list(error.path),
+    )
 
-    missing_fields = required_fields - event.keys()
-
-    if missing_fields:
+    if errors:
         raise InvalidEventError(
-            f"Missing fields: {sorted(missing_fields)}"
+            "; ".join(
+                f"{'.'.join(str(part) for part in error.path) or 'event'}: "
+                f"{error.message}"
+                for error in errors
+            )
         )
 
     try:
@@ -34,26 +58,24 @@ def validate_event(event: dict) -> None:
             "Invalid event_id"
         ) from exc
 
-    if not isinstance(event["customer_id"], str):
-        raise InvalidEventError(
-            "customer_id must be a string"
-        )
-
-    if not isinstance(event["heart_rate"], int):
-        raise InvalidEventError(
-            "heart_rate must be an integer"
-        )
-
-    if event["heart_rate"] <= 0:
-        raise InvalidEventError(
-            "heart_rate must be greater than zero"
-        )
-
     try:
-        datetime.fromisoformat(
-            event["event_time"].replace("Z", "+00:00")
-        )
+        parse_event_time(event["event_time"])
     except ValueError as exc:
         raise InvalidEventError(
             "Invalid event_time"
         ) from exc
+
+
+def parse_event_time(raw: str) -> datetime:
+    """
+    Parse an ISO-8601 event_time into an aware UTC datetime.
+    """
+
+    parsed = datetime.fromisoformat(raw)
+
+    if parsed.tzinfo is None:
+        raise ValueError(
+            "event_time must include a timezone offset"
+        )
+
+    return parsed

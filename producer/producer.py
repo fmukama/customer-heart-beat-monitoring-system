@@ -23,6 +23,8 @@ class HeartRateProducer:
         self.producer = KafkaProducer(
             bootstrap_servers=config.bootstrap_servers,
 
+            client_id=config.client_id,
+
             # Convert the event into bytes.
             value_serializer=serialize_event,
 

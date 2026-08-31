@@ -35,20 +35,23 @@ def should_be_abnormal(probability: float) -> bool:
     return random.random() < probability
 
 
-def should_be_late(probability: float) -> bool:
+def should_be_out_of_order(probability: float) -> bool:
     """
-    Decide whether the next event should experience
-    artificial delivery delay.
+    Decide whether the next event should carry a backdated event_time.
     """
 
     return random.random() < probability
 
 
-def generate_late_delay(
+def generate_backdate_seconds(
     maximum_seconds: float,
 ) -> float:
     """
-    Generate a random artificial delay for a late event.
+    Generate how far back an out-of-order event_time is shifted.
+
+    Backdating event_time is what makes the event arrive out of order.
+    Delaying delivery alone would not: event_time would still increase
+    monotonically, so the watermark could never classify it as late.
     """
 
     return random.uniform(1.0, maximum_seconds)

@@ -11,7 +11,6 @@ build/
 dist/
 database/
 config/
-scripts/
 docs/
 .env
 draft.txt

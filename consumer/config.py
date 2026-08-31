@@ -30,11 +30,6 @@ class ConsumerConfig:
         "earliest",
     )
 
-    enable_auto_commit: bool = os.getenv(
-        "KAFKA_ENABLE_AUTO_COMMIT",
-        "false",
-    ).lower() == "true"
-
     postgres_host: str = os.getenv(
         "POSTGRES_HOST",
         "localhost",
@@ -66,5 +61,47 @@ class ConsumerConfig:
         os.getenv(
             "MAX_RETRY_ATTEMPTS",
             "4",
+        )
+    )
+
+    # Watermark lags the maximum event time seen by this much, so
+    # moderately out-of-order events still land in the right window.
+    allowed_out_of_orderness_seconds: int = int(
+        os.getenv(
+            "ALLOWED_OUT_OF_ORDERNESS_SECONDS",
+            "300",
+        )
+    )
+
+    # Grace period past window_end before a window is finalized.
+    # Events arriving after finalization are stored raw but do not
+    # change the aggregate.
+    allowed_lateness_seconds: int = int(
+        os.getenv(
+            "ALLOWED_LATENESS_SECONDS",
+            "3600",
+        )
+    )
+
+    window_flush_interval_seconds: float = float(
+        os.getenv(
+            "WINDOW_FLUSH_INTERVAL_SECONDS",
+            "30",
+        )
+    )
+
+    # Bounds how long the poll loop blocks, so window flushing still
+    # ticks when no messages are arriving.
+    poll_timeout_ms: int = int(
+        os.getenv(
+            "KAFKA_POLL_TIMEOUT_MS",
+            "1000",
+        )
+    )
+
+    metrics_port: int = int(
+        os.getenv(
+            "METRICS_PORT",
+            "8000",
         )
     )

@@ -1,8 +1,11 @@
 import json
 import logging
+import time
+from datetime import timedelta
 
 from kafka import KafkaConsumer
 
+from .aggregator import DailyAggregator
 from .anomaly import classify_heart_rate
 from .config import ConsumerConfig
 from .database import create_connection
@@ -11,9 +14,13 @@ from .errors import (
     DLQPublishError,
     PermanentEventError,
 )
-from .repository import insert_event
+from .repository import (
+    insert_event,
+    load_open_windows,
+    upsert_daily_aggregate,
+)
 from .retry import retry_with_backoff
-from .validation import validate_event
+from .validation import parse_event_time, validate_event
 
 logger = logging.getLogger(__name__)
 
@@ -52,29 +59,58 @@ class HeartRateConsumer:
             topic=config.dlq_topic,
         )
 
+        self.aggregator = DailyAggregator(
+            allowed_out_of_orderness=timedelta(
+                seconds=config.allowed_out_of_orderness_seconds,
+            ),
+            allowed_lateness=timedelta(
+                seconds=config.allowed_lateness_seconds,
+            ),
+        )
+
+        restored = self.aggregator.rehydrate(
+            load_open_windows(self.connection)
+        )
+
+        if restored:
+            logger.info(
+                "Restored %d open window(s) from PostgreSQL.",
+                restored,
+            )
+
+        self.last_flush = time.monotonic()
+
     def process_message(self, message) -> None:
 
         event = message.value
 
         try:
-
-            # --------------------------------
-            # 1. Validate
-            # --------------------------------
-
             validate_event(event)
 
-            # --------------------------------
-            # 2. Classify
-            # --------------------------------
+            event_time = parse_event_time(
+                event["event_time"]
+            )
 
-            event["status"] = classify_heart_rate(
+            status = classify_heart_rate(
                 event["heart_rate"]
             )
 
-            # --------------------------------
-            # 3. Write to PostgreSQL
-            # --------------------------------
+            event["status"] = status
+
+            outcome = self.aggregator.add_event(
+                customer_id=event["customer_id"],
+                heart_rate=event["heart_rate"],
+                event_time=event_time,
+                is_abnormal=status == "ABNORMAL",
+            )
+
+            event["is_late"] = outcome.is_late
+
+            event["lateness_seconds"] = (
+                outcome.lateness_seconds
+                if outcome.is_late
+                else None
+            )
 
             retry_with_backoff(
                 lambda: insert_event(
@@ -84,16 +120,15 @@ class HeartRateConsumer:
                 max_attempts=self.config.max_retry_attempts,
             )
 
-            # --------------------------------
-            # 4. Commit Kafka offset
-            # --------------------------------
-
             self.consumer.commit()
 
-            logger.info(
-                "Processed event=%s",
-                event["event_id"],
-            )
+            if outcome.is_late:
+                logger.info(
+                    "Late event: event=%s lateness=%.1fs aggregated=%s",
+                    event["event_id"],
+                    outcome.lateness_seconds,
+                    outcome.aggregated,
+                )
 
         except PermanentEventError as exc:
 
@@ -138,25 +173,91 @@ class HeartRateConsumer:
 
             raise
 
+    def flush_windows(self, force: bool = False) -> None:
+        """
+        Persist finalized windows, plus a snapshot of open ones so the
+        current day is queryable before it closes.
+        """
+
+        elapsed = time.monotonic() - self.last_flush
+
+        if (
+            not force
+            and elapsed < self.config.window_flush_interval_seconds
+        ):
+            return
+
+        self.last_flush = time.monotonic()
+
+        finalized = self.aggregator.finalize_ready_windows()
+
+        for aggregate in finalized:
+            retry_with_backoff(
+                lambda aggregate=aggregate: upsert_daily_aggregate(
+                    self.connection,
+                    aggregate,
+                    is_finalized=True,
+                ),
+                max_attempts=self.config.max_retry_attempts,
+            )
+
+            logger.info(
+                "Window finalized: customer=%s window_start=%s events=%d",
+                aggregate.customer_id,
+                aggregate.window_start.isoformat(),
+                aggregate.event_count,
+            )
+
+        for aggregate in self.aggregator.snapshot_open_windows():
+            retry_with_backoff(
+                lambda aggregate=aggregate: upsert_daily_aggregate(
+                    self.connection,
+                    aggregate,
+                    is_finalized=False,
+                ),
+                max_attempts=self.config.max_retry_attempts,
+            )
+
     def run(self) -> None:
 
         logger.info(
-            "Starting consumer: topic=%s group=%s",
+            "Starting consumer: topic=%s group=%s "
+            "out_of_orderness=%ds lateness=%ds",
             self.config.topic,
             self.config.group_id,
+            self.config.allowed_out_of_orderness_seconds,
+            self.config.allowed_lateness_seconds,
         )
 
         try:
 
-            for message in self.consumer:
+            # Polled rather than iterated: the blocking iterator only
+            # returns on message arrival, so a quiet stream would never
+            # flush and windows would never finalize.
+            while True:
 
-                self.process_message(message)
+                batches = self.consumer.poll(
+                    timeout_ms=self.config.poll_timeout_ms,
+                )
+
+                for messages in batches.values():
+                    for message in messages:
+                        self.process_message(message)
+
+                self.flush_windows()
 
         finally:
 
             self.close()
 
     def close(self) -> None:
+
+        try:
+            self.flush_windows(force=True)
+        except Exception:
+            logger.exception(
+                "Failed to flush windows during shutdown."
+            )
 
         self.consumer.close()
 

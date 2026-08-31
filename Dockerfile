@@ -6,6 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY pyproject.toml ./
+COPY schemas/ ./schemas/
 COPY simulator/ ./simulator/
 COPY producer/ ./producer/
 COPY consumer/ ./consumer/
