@@ -1,0 +1,201 @@
+"""
+Scenarios A-D from draft.txt section 26.
+
+Kafka -> Consumer -> PostgreSQL, against real infrastructure.
+"""
+
+import uuid
+
+import pytest
+
+from consumer import repository
+from tests.integration.helpers import (
+    aggregates,
+    drain,
+    make_event,
+    read_dlq,
+    rows,
+)
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def customer() -> str:
+    return f"itest-{uuid.uuid4().hex[:10]}"
+
+
+def test_scenario_a_normal_event_reaches_postgres(
+    publish, build_consumer, db, customer
+):
+    publish(make_event(customer, heart_rate=72))
+
+    subject = build_consumer()
+
+    assert drain(subject, expected=1) == 1
+
+    stored = rows(db, customer)
+
+    assert len(stored) == 1
+    assert stored[0]["heart_rate"] == 72
+    assert stored[0]["status"] == "NORMAL"
+    assert stored[0]["is_late"] is False
+
+
+def test_scenario_a_ingestion_time_is_recorded_separately(
+    publish, build_consumer, db, customer
+):
+    event = make_event(customer)
+
+    publish(event)
+
+    subject = build_consumer()
+
+    drain(subject, expected=1)
+
+    stored = rows(db, customer)[0]
+
+    # Deliverable 12: event time is when it happened, ingestion time
+    # is when we received it. They are distinct columns.
+    assert stored["ingestion_time"] >= stored["event_time"]
+
+
+@pytest.mark.parametrize("heart_rate", [45, 180])
+def test_scenario_b_abnormal_event_is_stored_and_tagged(
+    publish, build_consumer, db, customer, heart_rate
+):
+    publish(make_event(customer, heart_rate=heart_rate))
+
+    subject = build_consumer()
+
+    drain(subject, expected=1)
+
+    stored = rows(db, customer)
+
+    # Abnormal is not invalid: it must persist, tagged.
+    assert len(stored) == 1
+    assert stored[0]["status"] == "ABNORMAL"
+
+    subject.flush_windows(force=True)
+
+    assert aggregates(db, customer)[0]["abnormal_count"] == 1
+
+
+def test_scenario_c_invalid_event_goes_to_dlq_not_postgres(
+    publish, build_consumer, db, customer, topics, bootstrap_servers
+):
+    _, dlq_topic = topics
+
+    publish(
+        make_event(customer, heart_rate=75, event_id="not-a-uuid")
+    )
+
+    subject = build_consumer()
+
+    drain(subject, expected=1)
+
+    assert rows(db, customer) == []
+
+    published = read_dlq(bootstrap_servers, dlq_topic)
+
+    assert len(published) == 1
+
+    failure = published[0]
+
+    assert failure["error_type"] == "VALIDATION_ERROR"
+    assert failure["original_event"]["customer_id"] == customer
+    assert failure["source_topic"] == topics[0]
+    assert failure["source_offset"] == 0
+    assert failure["failed_at"]
+
+
+def test_scenario_c_out_of_range_heart_rate_goes_to_dlq(
+    publish, build_consumer, db, customer, topics, bootstrap_servers
+):
+    _, dlq_topic = topics
+
+    # 500 bpm is structurally valid JSON but violates the schema range.
+    publish(make_event(customer, heart_rate=500))
+
+    subject = build_consumer()
+
+    drain(subject, expected=1)
+
+    assert rows(db, customer) == []
+
+    failure = read_dlq(bootstrap_servers, dlq_topic)[0]
+
+    assert "250" in failure["error_message"]
+
+
+def test_scenario_d_temporary_failure_retries_then_succeeds(
+    publish, build_consumer, db, customer, monkeypatch
+):
+    publish(make_event(customer, heart_rate=88))
+
+    subject = build_consumer()
+
+    real_insert = repository.insert_event
+
+    attempts = {"count": 0}
+
+    def flaky_insert(connection, event):
+        attempts["count"] += 1
+
+        if attempts["count"] < 3:
+            raise ConnectionError("simulated database outage")
+
+        return real_insert(connection, event)
+
+    monkeypatch.setattr(
+        "consumer.consumer.insert_event",
+        flaky_insert,
+    )
+
+    drain(subject, expected=1)
+
+    # Retried, then landed. No silent loss.
+    assert attempts["count"] == 3
+
+    stored = rows(db, customer)
+
+    assert len(stored) == 1
+    assert stored[0]["heart_rate"] == 88
+
+
+def test_idempotency_duplicate_event_id_stored_once(
+    publish, build_consumer, db, customer
+):
+    event = make_event(customer, heart_rate=70)
+
+    publish(event)
+    publish(event)
+
+    subject = build_consumer()
+
+    drain(subject, expected=2)
+
+    # Deliverable 09: at-least-once delivery must not duplicate rows.
+    assert len(rows(db, customer)) == 1
+
+
+def test_aggregate_reflects_every_stored_event(
+    publish, build_consumer, db, customer
+):
+    for heart_rate in (60, 80, 100, 190):
+        publish(make_event(customer, heart_rate=heart_rate))
+
+    subject = build_consumer()
+
+    drain(subject, expected=4)
+
+    subject.flush_windows(force=True)
+
+    aggregate = aggregates(db, customer)[0]
+
+    assert aggregate["event_count"] == 4
+    assert aggregate["minimum_heart_rate"] == 60
+    assert aggregate["maximum_heart_rate"] == 190
+    assert aggregate["average_heart_rate"] == pytest.approx(107.5)
+    assert aggregate["abnormal_count"] == 1
+    assert aggregate["is_finalized"] is False

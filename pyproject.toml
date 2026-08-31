@@ -33,8 +33,18 @@ include = [
 
 
 [tool.pytest.ini_options]
-testpaths = [
-    "tests"
+testpaths = ["tests"]
+
+# Integration tests need a running stack, so they are opt-in.
+addopts = "-m 'not integration'"
+
+markers = [
+    "integration: requires a running docker compose stack",
+]
+
+# kafka-python warns about its own default serializers on every client.
+filterwarnings = [
+    'ignore:.*does not implement kafka.serializer.*:DeprecationWarning',
 ]
 
 

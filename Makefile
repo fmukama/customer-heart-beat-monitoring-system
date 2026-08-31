@@ -1,4 +1,4 @@
-.PHONY: help build lint lint-fix test up down restart logs ps topics simulator producer consumer psql shell clean
+.PHONY: help build lint lint-fix test test-unit test-integration test-all up down restart logs ps topics simulator producer consumer psql shell clean
 
 COMPOSE := docker compose
 DEV     := $(COMPOSE) run --rm dev
@@ -12,7 +12,8 @@ help:
 	@echo   make build       Build the application images
 	@echo   make lint        Run Ruff
 	@echo   make lint-fix    Run Ruff with --fix
-	@echo   make test        Run pytest
+	@echo   make test        Run unit tests
+	@echo   make test-integration  Run integration tests, needs make up
 	@echo   ---- stack ----
 	@echo   make up          Start the full stack
 	@echo   make down        Stop the stack
@@ -42,8 +43,18 @@ lint-fix:
 	$(DEV) ruff check --fix .
 
 
-test:
+test: test-unit
+
+
+test-unit:
 	$(DEV) pytest
+
+
+test-integration:
+	$(DEV) pytest tests/integration -m integration
+
+
+test-all: test-unit test-integration
 
 
 up:
