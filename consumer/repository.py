@@ -1,7 +1,6 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from psycopg import Connection
-
 
 INSERT_EVENT_SQL = """
 INSERT INTO heart_rate_events (
@@ -36,7 +35,7 @@ def insert_event(
         False -> event already existed.
     """
 
-    event["ingestion_time"] = datetime.now(timezone.utc)
+    event["ingestion_time"] = datetime.now(UTC)
 
     with connection.cursor() as cursor:
         cursor.execute(

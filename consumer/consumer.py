@@ -15,7 +15,6 @@ from .repository import insert_event
 from .retry import retry_with_backoff
 from .validation import validate_event
 
-
 logger = logging.getLogger(__name__)
 
 

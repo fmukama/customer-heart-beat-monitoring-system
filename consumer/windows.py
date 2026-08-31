@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 
 def get_day_window(
@@ -6,7 +6,7 @@ def get_day_window(
 ) -> tuple[datetime, datetime]:
 
     event_time = event_time.astimezone(
-        timezone.utc
+        UTC
     )
 
     window_start = event_time.replace(

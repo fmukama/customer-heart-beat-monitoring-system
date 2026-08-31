@@ -3,8 +3,8 @@ import random
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Iterator
+from collections.abc import Iterator
+from datetime import UTC, datetime
 
 from .config import SimulatorConfig
 from .scenarios import (
@@ -21,7 +21,7 @@ def utc_now() -> datetime:
     Return the current UTC time.
     """
 
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def generate_event(

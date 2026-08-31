@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from kafka import KafkaProducer
 
@@ -54,7 +54,7 @@ class DeadLetterProducer:
             "source_offset": source_offset,
 
             "failed_at": datetime.now(
-                timezone.utc
+                UTC
             ).isoformat(),
         }
 

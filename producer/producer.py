@@ -5,7 +5,6 @@ from kafka import KafkaProducer
 from .config import KafkaProducerConfig
 from .serializer import serialize_event
 
-
 logger = logging.getLogger(__name__)
 
 
