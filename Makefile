@@ -6,7 +6,7 @@
         up ps urls adminer grafana prometheus alertmanager notifier \
         logs producer consumer notifier-logs topics \
         psql show-raw show-daily show-late show-dlq reconcile \
-        inject \
+        show-faults inject \
         metrics throughput \
         alerts show-notifications alert-demo \
         test-integration test-all \
@@ -72,15 +72,15 @@ help:
 	@echo make show-dlq - read the dead letter topic
 	@echo make reconcile - open windows vs raw counts
 	@echo make psql - open a psql shell
-	@echo == 5. EXERCISE THE EDGE CASES ==
-	@echo make inject WHAT=normal - valid reading
-	@echo make inject WHAT=abnormal - 185 bpm, stored and tagged
-	@echo make inject WHAT=invalid - bad UUID, goes to the DLQ
-	@echo make inject WHAT=outofrange - 600 bpm, schema violation
-	@echo make inject WHAT=late - backdated 2h, flagged late
-	@echo make inject WHAT=duplicate - same id twice, stored once
-	@echo make inject WHAT=future - advances watermark, closes windows
-	@echo make inject WHAT=toolate - raw kept, finalized window untouched
+	@echo == 5. VERIFY THE EDGE CASES ==
+	@echo The simulator injects abnormal, out-of-order, extreme-late,
+	@echo out-of-range, invalid and duplicate events continuously.
+	@echo Nothing needs triggering by hand to get evidence.
+	@echo make show-faults - breakdown of every fault produced so far
+	@echo Only these two cannot be automatic, see docs for why:
+	@echo make inject WHAT=future - advance the watermark, close windows
+	@echo make inject WHAT=toolate - then prove a finalized window is immutable
+	@echo make inject WHAT=X - X is also normal abnormal invalid outofrange late duplicate, for on-demand demos
 	@echo == 6. OBSERVABILITY ==
 	@echo make metrics - raw consumer metrics
 	@echo make throughput - rates, latency percentiles, watermark lag
@@ -225,9 +225,20 @@ psql:
 
 
 # ==============================================================
-# 5. Exercise the edge cases
+# 5. Verify the edge cases
 # ==============================================================
 
+# The simulator injects every fault continuously, so this is the
+# primary check: proof the pipeline handled each case, without anyone
+# publishing anything by hand.
+show-faults:
+	$(PSQL) -c "SELECT count(*) AS total, count(*) FILTER (WHERE status='NORMAL') AS normal, count(*) FILTER (WHERE status='ABNORMAL') AS abnormal, count(*) FILTER (WHERE is_late) AS late, count(*) FILTER (WHERE lateness_seconds > 3600) AS extreme_late, round(max(lateness_seconds)::numeric,0) AS worst_late_s FROM heart_rate_events;"
+	$(PSQL) -c "SELECT count(*) AS stored, count(DISTINCT event_id) AS distinct_ids, count(*) - count(DISTINCT event_id) AS duplicate_rows FROM heart_rate_events;"
+	$(DEV) python -c "import urllib.request as u; m=u.urlopen('http://consumer:8000/metrics').read().decode(); print('\n'.join(l for l in m.splitlines() if l.startswith(('consumer_dlq_messages_total ','consumer_messages_processed_total ','consumer_messages_failed_total{'))))"
+
+
+# Deterministic, on-demand version of a single case. Needed for
+# `future` and `toolate`, which cannot be probabilistic: see the README.
 # WHAT = normal | abnormal | invalid | outofrange
 #      | late | toolate | future | duplicate
 inject:

@@ -116,27 +116,40 @@ inject anything to get evidence.** Each rate is independently tunable in
 | Invalid payload | 0.4% | Buggy device: bad UUID, missing field, wrong type |
 | Duplicate | 1% | Device retrying a send it already made |
 
-After a couple of minutes on a fresh stack, `make show-late` and
-`make show-dlq` both have real data in them. Measured over ~8,000
-events: 319 abnormal, 179 late, 34 extreme-late (worst 47 hours), 43
-dead-lettered, and 91 duplicates absorbed with zero duplicate rows.
-
-`make inject WHAT=<case>` remains, for **deterministic** demonstration —
-firing one specific case on command rather than waiting for probability.
-Give the consumer a few seconds, then inspect.
+One command shows what the pipeline handled:
 
 ```bash
-make inject WHAT=normal        # valid    → stored NORMAL
-make inject WHAT=abnormal      # 185 bpm  → stored ABNORMAL
-make inject WHAT=invalid       # bad UUID → DLQ
-make inject WHAT=outofrange    # 600 bpm  → DLQ (schema violation)
-make inject WHAT=late          # -2h      → stored, is_late = true
-make inject WHAT=duplicate     # same id twice → exactly one row
-make inject WHAT=future        # +3d      → advances watermark, closes windows
-make inject WHAT=toolate       # -2d      → raw kept, finalized window untouched
+make show-faults
 ```
 
-Two of these are **deliberately not automated**:
+```
+ total | normal | abnormal | late | extreme_late | worst_late_s
+  8391 |   7914 |      477 |  273 |           49 |       171148
+
+ stored | distinct_ids | duplicate_rows
+   8392 |         8392 |              0
+
+ consumer_dlq_messages_total 62
+```
+
+Worst lateness of 171,148s is ~47 hours — the extreme-late fault. And
+`duplicate_rows = 0` despite a 1% duplicate rate is the idempotency
+guarantee on live traffic rather than in a test.
+
+### On-demand injection
+
+`make inject WHAT=<case>` fires one specific case immediately, for when
+you need to demonstrate rather than wait for probability:
+
+```bash
+make inject WHAT=future        # +3d → advances watermark, closes windows
+make inject WHAT=toolate       # -2d → raw kept, finalized window untouched
+```
+
+`WHAT` also accepts `normal`, `abnormal`, `invalid`, `outofrange`,
+`late` and `duplicate`, though the simulator already produces all six.
+
+The two above are **the only cases that cannot be automated**:
 
 - **`future`** is not sensor behaviour. It is a tool for jumping the
   watermark so windows finalize inside a demo instead of after a real
@@ -152,6 +165,7 @@ Two of these are **deliberately not automated**:
 Inspect the result:
 
 ```bash
+make show-faults    # what the simulator produced and how it was handled
 make show-raw       # recent events with status, is_late, lateness
 make show-daily     # daily aggregates, open and finalized
 make show-late      # late count and worst lateness
@@ -166,9 +180,11 @@ make throughput     # rates, latency percentiles, watermark lag
 **Invalid → DLQ, and nothing reaches PostgreSQL**
 
 ```bash
-make inject WHAT=outofrange
 make show-dlq
 ```
+
+The DLQ already has entries — the simulator emits malformed payloads
+continuously. No injection needed.
 
 The DLQ payload carries the schema's own message, the original event,
 and the source topic / partition / offset. The offset is committed
@@ -178,7 +194,6 @@ redelivers rather than dropping.
 **Late events are detected and measured**
 
 ```bash
-make inject WHAT=late
 make show-late
 ```
 
@@ -199,8 +214,7 @@ make show-daily                 # aggregate UNCHANGED
 **Idempotency under at-least-once delivery**
 
 ```bash
-make inject WHAT=duplicate
-make show-raw     # the event_id appears exactly once
+make show-faults   # duplicate_rows is 0 despite a 1% duplicate rate
 ```
 
 **Aggregates reconcile with raw data**
