@@ -4,6 +4,39 @@ Simulated heart-rate sensors → Kafka → event-time stream processing with
 watermarks and 1-day tumbling windows → PostgreSQL, with Prometheus and
 Grafana for observability.
 
+## Overview
+
+> "I built a real-time pipeline that ingests simulated heart-rate sensor
+> readings through Kafka, processes them in **event time** with
+> watermarks and one-day tumbling windows, and stores both raw readings
+> and daily per-customer aggregates in PostgreSQL. Invalid events go to
+> a dead letter queue instead of being dropped. Prometheus alert rules
+> feed Alertmanager, and every operational alert is recorded in
+> PostgreSQL with a firing-and-resolved lifecycle. The whole stack runs
+> in Docker with a provisioned Grafana dashboard. 125 automated tests,
+> 96 unit and 29 integration."
+
+
+> "The hard part of a streaming system isn't moving bytes — it's dealing
+> with the fact that **events arrive out of order**. A sensor reading
+> that happened at 10:00 might reach us at 10:08. If you aggregate by
+> arrival time you put it in the wrong day's bucket and your numbers are
+> silently wrong.
+>
+> So the system processes by *event time* — when the heartbeat actually
+> happened. A watermark tracks how far event time has progressed and
+> decides when a window can safely close. Late events within a grace
+> period still update the correct window. Events arriving after a window
+> closes are still stored raw, but they don't retroactively change a
+> finalized aggregate — that's a deliberate policy so historical numbers
+> stay stable.
+>
+> I also separated two ideas that look similar: **abnormal is not
+> invalid**. A heart rate of 180 is medically abnormal but structurally
+> valid, so it's stored and tagged. Only structurally broken events —
+> bad UUID, out-of-range value, missing field — go to the dead letter
+> queue, with enough context to diagnose them."
+
 **Everything runs in Docker.**
 
 ```bash
@@ -355,8 +388,7 @@ configured by default.
 
 ## CI/CD
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — deliberately
-slim:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```
 push / PR
@@ -373,53 +405,6 @@ CI uses the same `make` targets you run locally, so it cannot drift.
 Everything is environment-driven — see [.env.example](.env.example).
 Nothing needs a source edit, including event rate, out-of-order
 probability, watermark lag, allowed lateness, and flush interval.
-
----
-
-## Known limitations
-
-**Aggregates depend on the insert result, not on delivery.** A
-redelivered event is refused by `ON CONFLICT` and is therefore *not*
-folded into its window either — the consumer calls `observe()` for every
-delivery but `add_to_window()` only when the insert actually created a
-row. That keeps `event_count` equal to the raw count under
-at-least-once delivery. Verified live: 331 deliveries, 2 duplicates
-ignored, 329 rows, 329 distinct, every open window reconciling.
-
-The residual gap is a hard crash *between* the insert and the in-memory
-update, which would lose that event's contribution to the window until
-the aggregate is rebuilt from raw. Raw data is always authoritative.
-
-**Throughput caps at ~57–65 events/sec per consumer**, set by two
-synchronous round trips per event (database commit, Kafka offset
-commit). Batching would raise it at the cost of per-event durability.
-
-**Memory grows with `customers × open windows`.** Fine at this scale; a
-very large customer set with long allowed lateness would need spilling.
-
-**Single-node infrastructure** — one broker, replication factor 1, one
-PostgreSQL. No failover.
-
-**The producer is single-threaded** and caps near 3,450 events/sec, so
-the design doc's 5,000/sec target was not reached on the input side.
-
-**No authentication** — Kafka is `PLAINTEXT`, and PostgreSQL, Grafana and
-Adminer use development credentials. Local development only.
-
-**Alert history shares its database with the data it monitors.** If
-PostgreSQL is down, `PostgresUnavailable` cannot be written until it
-returns; the notifier buffers in memory and always logs to stdout. A
-production system would keep the alert store elsewhere.
-
-**No outbound notification channel is configured.** Alerts land in
-PostgreSQL. Slack and email are stubbed but need credentials.
-
-**Naming differs from the original design notes**, which used
-`heartbeat-events` and `heartbeat_event.json` where the implementation
-uses `heart-rate-events` and `heart_rate_event.json`. The code is
-internally consistent; the notes predate it.
-
----
 
 ## Layout
 
