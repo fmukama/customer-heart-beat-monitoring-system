@@ -1,18 +1,5 @@
 # Architecture
 
-Diagrams are PlantUML sources with rendered PNG and SVG alongside:
-
-| Diagram | Source | Rendered |
-| --- | --- | --- |
-| Data flow | [dataflow.puml](dataflow.puml) | [PNG](dataflow.png) · [SVG](dataflow.svg) |
-| Deployment | [deployment.puml](deployment.puml) | [PNG](deployment.png) · [SVG](deployment.svg) |
-
-Re-render after editing a `.puml`:
-
-```bash
-make diagrams
-```
-
 ![Data flow](dataflow.png)
 
 ## Component responsibilities
@@ -105,6 +92,3 @@ be dialling itself.
 `service_completed_successfully`, so topics exist before anything uses
 them, with `KAFKA_AUTO_CREATE_TOPICS_ENABLE` left off.
 
-Prometheus discovers consumers by DNS rather than a static target, so
-scraping follows replicas when the consumer is scaled. See
-[performance.md](performance.md).

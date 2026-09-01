@@ -4,8 +4,8 @@
 # business data, already stored and tagged. These fire when the pipeline
 # itself is unhealthy.
 #
-# Thresholds are set against measured baselines from the load testing in
-# docs/performance.md, not guessed.
+# Thresholds are set against measured baselines from the load testing
+# documented in the README, not guessed.
 
 groups:
 
